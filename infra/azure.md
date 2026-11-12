@@ -103,7 +103,7 @@ az containerapp create -g $RG -n kw-api --environment $ENV --image "$IMG" \
 az containerapp create -g $RG -n kw-agenci --environment $ENV --image "$IMG" \
   --registry-server ghcr.io --registry-username "$GH_LOGIN" --registry-password "$GH_TOKEN" \
   --min-replicas 1 --max-replicas 1 --cpu 0.25 --memory 0.5Gi \
-  --command "kwatermistrz-agenci" \
+  --command "kwatermistrz-agenci" --args "all" \
   --secrets db-url="$DB_URL" amqp-url="$AMQP_URL" \
   --env-vars DATABASE_URL=secretref:db-url AMQP_URL=secretref:amqp-url
 
