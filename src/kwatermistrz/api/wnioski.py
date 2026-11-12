@@ -25,16 +25,11 @@ from .zaleznosci import get_broker, get_sesja, pobierz_delegacje
 router = APIRouter(tags=["Wnioski"])
 
 
-@router.post("/wnioski", status_code=202, response_model=DelegacjaOut)
-async def zloz_wniosek(
-    wniosek: WniosekIn,
-    s: Session = Depends(get_sesja),
-    broker: Broker = Depends(get_broker),
-    idempotency_key: str | None = Header(None),
-):
+async def zarejestruj_wniosek(s: Session, broker: Broker, wniosek: WniosekIn, klucz: str | None = None) -> Delegacja:
+    """Rejestruje złożony wniosek i przekazuje go agentom – wspólne dla API i interfejsu (`web/`)."""
     # S22IT1S0P2-22: ponowienie po utracie połączenia nie tworzy drugiego wniosku
-    if idempotency_key:
-        istniejaca = s.scalar(select(Delegacja).where(Delegacja.klucz_idempotencji == idempotency_key))
+    if klucz:
+        istniejaca = s.scalar(select(Delegacja).where(Delegacja.klucz_idempotencji == klucz))
         if istniejaca:
             return istniejaca
     if s.get(Zolnierz, wniosek.id_zolnierza) is None:
@@ -47,14 +42,25 @@ async def zloz_wniosek(
         id_zolnierza=wniosek.id_zolnierza,
         id_przedsiewziecia=wniosek.id_przedsiewziecia,
         dane_wniosku=wniosek.model_dump(exclude={"id_zolnierza", "id_przedsiewziecia"}),
+        potrzeba_zakwaterowania=wniosek.potrzeba_zakwaterowania,
         status=Status.ZLOZONY,
         data_zlozenia=teraz(),
-        klucz_idempotencji=idempotency_key,
+        klucz_idempotencji=klucz,
     )
     s.add(d)
     s.commit()
     await broker.publikuj(Komunikat(typ=Typ.WNIOSEK_ZLOZONY, id_delegacji=d.id_delegacji))
     return d
+
+
+@router.post("/wnioski", status_code=202, response_model=DelegacjaOut)
+async def zloz_wniosek(
+    wniosek: WniosekIn,
+    s: Session = Depends(get_sesja),
+    broker: Broker = Depends(get_broker),
+    idempotency_key: str | None = Header(None),
+):
+    return await zarejestruj_wniosek(s, broker, wniosek, idempotency_key)
 
 
 @router.get("/delegacje/{id_delegacji}", response_model=DelegacjaOut)

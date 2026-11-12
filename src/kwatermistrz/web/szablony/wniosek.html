@@ -1,0 +1,6 @@
+{% extends "baza.html" %}
+{% block tytul %}Wniosek {{ d.id_delegacji }}{% endblock %}
+{% block tresc %}
+<p><a href="/app/pulpit">← Moje wnioski</a></p>
+{% include "_stan_wniosku.html" %}
+{% endblock %}

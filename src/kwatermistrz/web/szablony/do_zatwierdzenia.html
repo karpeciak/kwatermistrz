@@ -1,0 +1,23 @@
+{% extends "baza.html" %}
+{% block tytul %}Do zatwierdzenia{% endblock %}
+{% block tresc %}
+<h2>Wnioski oczekujące na Twoją decyzję</h2>
+
+{% if wnioski %}
+<div class="overflow-auto">
+<table>
+  <thead>
+    <tr><th>Wniosek</th><th>Wnioskodawca</th><th>Cel i miejsce</th><th>Termin</th><th>Czeka</th><th>Decyzja</th></tr>
+  </thead>
+  <tbody>
+    {% for d in wnioski %}
+    {% set wnioskodawca = wnioskodawcy[d.id_zolnierza] %}
+    {% include "_wiersz_decyzji.html" %}
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}
+<article class="pusto"><p>Brak wniosków oczekujących na Twoją decyzję.</p></article>
+{% endif %}
+{% endblock %}

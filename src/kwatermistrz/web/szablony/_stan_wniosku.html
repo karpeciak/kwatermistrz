@@ -1,0 +1,71 @@
+{% set w = d.dane_wniosku %}
+<div id="stan-wniosku"
+     {% if w_toku %}hx-get="/app/wnioski/{{ d.id_delegacji }}/stan" hx-trigger="every 3s" hx-swap="outerHTML"{% endif %}>
+
+  <div class="naglowek-strony">
+    <h2>Wniosek {{ d.id_delegacji }}</h2>
+    <span class="status duzy {{ d.status | klasa_statusu }}">{{ d.status }}</span>
+  </div>
+
+  <article>
+    <header><strong>Bieżący etap</strong>{% if w_toku %} <span aria-busy="true">agenci pracują nad wnioskiem</span>{% endif %}</header>
+    <div class="grid">
+      <div><small>Status</small><p>{{ d.status }}</p></div>
+      <div><small>Na tym etapie od</small><p>{{ d.data_zmiany_statusu | czas }} ({{ d.data_zmiany_statusu | ile_czasu }})</p></div>
+      <div><small>Osoba odpowiedzialna</small>
+        <p>{% if zatwierdzajacy and d.status == "w akceptacji" %}{{ zatwierdzajacy.stopien }} {{ zatwierdzajacy.imie_nazwisko }}, {{ zatwierdzajacy.funkcja }}{% else %}–{% endif %}</p>
+      </div>
+    </div>
+    {% if d.przekazano_zastepcy %}
+    <p class="komunikat">Przełożony nie podjął decyzji w terminie – wniosek przekazano osobie zastępującej.</p>
+    {% elif d.liczba_przypomnien %}
+    <p class="komunikat">Termin decyzji minął – przełożony otrzymał przypomnienie.</p>
+    {% endif %}
+    {% if bledy %}
+    <div class="bledy">
+      <strong>Wniosek wymaga uzupełnienia:</strong>
+      <ul>{% for b in bledy %}<li>{{ b }}</li>{% endfor %}</ul>
+    </div>
+    {% endif %}
+    {% if d.uzasadnienie_decyzji %}
+    <p><small>Uzasadnienie decyzji przełożonego</small><br>{{ d.uzasadnienie_decyzji }}</p>
+    {% endif %}
+  </article>
+
+  <article>
+    <header><strong>Dane wniosku</strong></header>
+    <div class="grid">
+      <div><small>Wnioskodawca</small><p>{{ wnioskodawca.stopien }} {{ wnioskodawca.imie_nazwisko }}</p></div>
+      <div><small>Cel</small><p>{{ d.cel_wyjazdu or w.get("cel_wyjazdu") or "–" }}</p></div>
+      <div><small>Miejsce</small><p>{{ d.miejsce_docelowe or w.get("miejsce_docelowe") or "–" }}</p></div>
+    </div>
+    <div class="grid">
+      <div><small>Termin</small><p><span class="bez-lamania">{{ w.get("data_wyjazdu") | data_pl }} – {{ w.get("data_powrotu") | data_pl }}</span></p></div>
+      <div><small>Podstawa</small><p>{{ w.get("podstawa_numer_rozkazu") or "–" }}{% if w.get("podstawa_data_rozkazu") %} z {{ w.get("podstawa_data_rozkazu") | data_pl }}{% endif %}</p></div>
+      <div><small>Transport / nocleg</small><p>{{ w.get("srodek_transportu") or "–" }} · {{ "z noclegiem" if d.potrzeba_zakwaterowania else "bez noclegu" }}</p></div>
+    </div>
+    {% if przedsiewziecie %}<p><small>Przedsięwzięcie</small><br>{{ przedsiewziecie.nazwa }}, {{ przedsiewziecie.miejscowosc }}</p>{% endif %}
+    <p><small>Złożony {{ d.data_zlozenia | czas }}</small></p>
+  </article>
+
+  <article>
+    <header><strong>Historia obsługi</strong> <small>– log operacji i decyzji agentów</small></header>
+    {% if operacje %}
+    <ol class="historia">
+      {% for o in operacje %}
+      <li class="wynik-{{ o.wynik | lower }}">
+        <div><strong>{{ agenci.get(o.id_agenta, o.id_agenta) }}</strong> · {{ o.operacja }}
+          <small>{{ o.znacznik_czasu | czas }}</small></div>
+        {% if o.komunikat %}<small>{{ o.komunikat }}</small>{% endif %}
+        {% for dec in decyzje.get(o.id_operacji, []) %}
+        <div class="decyzja-agenta">Decyzja: <strong>{{ dec.typ_decyzji }} – {{ dec.wybrany_wariant }}</strong>
+          <small>({{ dec.rodzaj_decyzji | lower }}{% if dec.rodzaj_decyzji == "Probabilistyczna" %}, pewność {{ "%.0f" | format(dec.pewnosc * 100) }}%{% endif %})</small></div>
+        {% endfor %}
+      </li>
+      {% endfor %}
+    </ol>
+    {% else %}
+    <p>Wniosek czeka w kolejce na agentów…</p>
+    {% endif %}
+  </article>
+</div>
