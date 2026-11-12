@@ -45,14 +45,14 @@ services:
       retries: 20
 
   # Lokalnie każdy agent w osobnym kontenerze (w Azure: jeden kontener z `run all`, patrz infra/azure.md)
-  koordynator:    { <<: *agent, command: ["python", "-m", "kwatermistrz.agents.run", "koordynator"] }
-  wnioski:        { <<: *agent, command: ["python", "-m", "kwatermistrz.agents.run", "wnioski"] }
-  zatwierdzenia:  { <<: *agent, command: ["python", "-m", "kwatermistrz.agents.run", "zatwierdzenia"] }
-  transport:      { <<: *agent, command: ["python", "-m", "kwatermistrz.agents.run", "transport"] }
-  zakwaterowanie: { <<: *agent, command: ["python", "-m", "kwatermistrz.agents.run", "zakwaterowanie"] }
-  rozliczenia:    { <<: *agent, command: ["python", "-m", "kwatermistrz.agents.run", "rozliczenia"] }
-  zgodnosc:       { <<: *agent, command: ["python", "-m", "kwatermistrz.agents.run", "zgodnosc"] }
-  monitorujacy:   { <<: *agent, command: ["python", "-m", "kwatermistrz.agents.run", "monitorujacy"] }
+  koordynator:    { <<: *agent, command: ["kwatermistrz-agenci", "koordynator"] }
+  wnioski:        { <<: *agent, command: ["kwatermistrz-agenci", "wnioski"] }
+  zatwierdzenia:  { <<: *agent, command: ["kwatermistrz-agenci", "zatwierdzenia"] }
+  transport:      { <<: *agent, command: ["kwatermistrz-agenci", "transport"] }
+  zakwaterowanie: { <<: *agent, command: ["kwatermistrz-agenci", "zakwaterowanie"] }
+  rozliczenia:    { <<: *agent, command: ["kwatermistrz-agenci", "rozliczenia"] }
+  zgodnosc:       { <<: *agent, command: ["kwatermistrz-agenci", "zgodnosc"] }
+  monitorujacy:   { <<: *agent, command: ["kwatermistrz-agenci", "monitorujacy"] }
 
 volumes:
   pgdata:

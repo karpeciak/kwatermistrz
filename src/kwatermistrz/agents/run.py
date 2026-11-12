@@ -1,4 +1,4 @@
-"""Uruchomienie agentów: `python -m kwatermistrz.agents.run <nazwa>[,<nazwa>…]` albo `all`.
+"""Uruchomienie agentów: `kwatermistrz-agenci <nazwa>[,<nazwa>…]` albo `all` (domyślnie).
 
 W Azure wszyscy agenci działają w jednym kontenerze (`all`), żeby zmieścić się w budżecie Azure for Students –
 logicznie pozostają niezależni: każdy ma własną kolejkę, własną obsługę błędów i własny wpis w logu.
