@@ -1,0 +1,58 @@
+x-app: &app
+  build: .
+  image: kwatermistrz:dev
+  environment:
+    DATABASE_URL: postgresql+psycopg://kwatermistrz:kwatermistrz@postgres:5432/kwatermistrz
+    AMQP_URL: amqp://guest:guest@rabbitmq:5672/
+  restart: unless-stopped
+
+x-agent: &agent
+  <<: *app
+  depends_on:
+    api: { condition: service_healthy }
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: kwatermistrz
+      POSTGRES_PASSWORD: kwatermistrz
+      POSTGRES_DB: kwatermistrz
+    ports: ["5432:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kwatermistrz"]
+      interval: 5s
+      retries: 10
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    ports: ["5672:5672", "15672:15672"]
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      retries: 10
+
+  api:
+    <<: *app
+    ports: ["8000:8000"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 5s
+      retries: 20
+
+  # Lokalnie każdy agent w osobnym kontenerze (w Azure: jeden kontener z `run all`, patrz infra/azure.md)
+  koordynator:    { <<: *agent, command: ["python", "-m", "kwatermistrz.agents.run", "koordynator"] }
+  wnioski:        { <<: *agent, command: ["python", "-m", "kwatermistrz.agents.run", "wnioski"] }
+  zatwierdzenia:  { <<: *agent, command: ["python", "-m", "kwatermistrz.agents.run", "zatwierdzenia"] }
+  transport:      { <<: *agent, command: ["python", "-m", "kwatermistrz.agents.run", "transport"] }
+  zakwaterowanie: { <<: *agent, command: ["python", "-m", "kwatermistrz.agents.run", "zakwaterowanie"] }
+  rozliczenia:    { <<: *agent, command: ["python", "-m", "kwatermistrz.agents.run", "rozliczenia"] }
+  zgodnosc:       { <<: *agent, command: ["python", "-m", "kwatermistrz.agents.run", "zgodnosc"] }
+  monitorujacy:   { <<: *agent, command: ["python", "-m", "kwatermistrz.agents.run", "monitorujacy"] }
+
+volumes:
+  pgdata:
