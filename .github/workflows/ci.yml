@@ -13,8 +13,8 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
@@ -33,18 +33,18 @@ jobs:
     outputs:
       image: ${{ steps.nazwa.outputs.image }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - id: nazwa
         run: |
           repo="ghcr.io/${GITHUB_REPOSITORY,,}"
           echo "repo=$repo" >> "$GITHUB_OUTPUT"
           echo "image=$repo:${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v7
         with:
           context: .
           push: true
@@ -62,7 +62,7 @@ jobs:
       id-token: write
       contents: read
     steps:
-      - uses: azure/login@v2
+      - uses: azure/login@v3
         with:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
