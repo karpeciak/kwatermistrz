@@ -23,14 +23,17 @@ Przepływ do wypróbowania:
     "srodek_transportu": "pociąg"}
    ```
    Zapamiętaj `id_delegacji` z odpowiedzi.
-2. `GET /delegacje/{id_delegacji}` – po chwili status `Oczekuje na akceptację` (agenci zwalidowali wniosek
+2. `GET /delegacje/{id_delegacji}` – po chwili status `w akceptacji` (agenci zwalidowali wniosek
    i przekazali go przełożonemu).
 3. `POST /delegacje/{id_delegacji}/decyzja` z treścią `{"id_osoby": "ZOL-001", "decyzja": "Zgoda"}` → status
-   `Zatwierdzona`.
+   `zatwierdzony`. Koordynator zleca wtedy polecenie wyjazdu, transport i zakwaterowanie.
 4. `GET /delegacje/{id_delegacji}/przebieg` – log operacji i decyzji każdego agenta.
 
-Wniosek z błędem (np. pusty `cel_wyjazdu` albo data powrotu przed datą wyjazdu) dostaje status `Do poprawy`,
+Wniosek z błędem (np. pusty `cel_wyjazdu` albo data powrotu przed datą wyjazdu) dostaje status `do uzupełnienia`,
 a uzasadnienie widać w przebiegu.
+
+Etapy obsługi (S22IT1S0P2-32): `roboczy` → `złożony` → `w akceptacji` → `zatwierdzony` → `zorganizowany` →
+`w trakcie` → `do rozliczenia` → `rozliczony`; boczne: `do uzupełnienia`, `odrzucony`.
 
 ## Architektura
 
@@ -43,16 +46,17 @@ klient ──HTTP──▶ API (FastAPI) ──▶ RabbitMQ (exchange „kwaterm
 
 | Agent | Kolejka | Stan |
 |---|---|---|
-| AG-01 Koordynator | `kwatermistrz.koordynator` | sprint 1 – maszyna stanów delegacji |
-| AG-02 Agent Wniosków | `kwatermistrz.wnioski` | sprint 1 – walidacja (S22IT1S0P2-7…12) |
-| AG-03 Agent Zatwierdzeń | `kwatermistrz.zatwierdzenia` | sprint 1 – przełożony, przypomnienie, eskalacja (-13), podwójna decyzja (-14) |
-| AG-04 Agent Transportu | `kwatermistrz.transport` | sprint 2 |
-| AG-05 Agent Zakwaterowania | `kwatermistrz.zakwaterowanie` | sprint 2 |
+| AG-01 Koordynator | `kwatermistrz.koordynator` | działa – pełny przebieg delegacji, przejścia według dat |
+| AG-02 Agent Wniosków | `kwatermistrz.wnioski` | walidacja działa (S22IT1S0P2-7…12); w sprincie 1: -33, polecenie wyjazdu -38 |
+| AG-03 Agent Zatwierdzeń | `kwatermistrz.zatwierdzenia` | działa – przełożony, eskalacja (-13), jednokrotna decyzja (-14); w sprincie 1: -35 |
+| AG-04 Agent Transportu | `kwatermistrz.transport` | sprint 1: S22IT1S0P2-27 |
+| AG-05 Agent Zakwaterowania | `kwatermistrz.zakwaterowanie` | sprint 1: S22IT1S0P2-39 |
+| AG-06 Agent Rozliczeń | `kwatermistrz.rozliczenia` | sprint 1: S22IT1S0P2-36, -20 |
+| AG-07 Agent Zgodności | `kwatermistrz.zgodnosc` | sprint 1: S22IT1S0P2-43 |
 | AG-08 Agent Monitorujący | `kwatermistrz.monitorujacy` | sprint 3 |
-| AG-06 Agent Rozliczeń | `kwatermistrz.rozliczenia` | sprint 4 |
-| AG-07 Agent Zgodności | `kwatermistrz.zgodnosc` | sprint 4 |
 
-Agenci w budowie przyjmują zadanie i odnotowują je w logu, żeby przepływ był widoczny od początku.
+Zadania jeszcze nieimplementowane są przyjmowane i odnotowywane w logu z numerem historyjki, żeby przebieg
+był widoczny od początku. Podział pracy w sprincie 1: [CONTRIBUTING.md](CONTRIBUTING.md#sprint-1--kto-pracuje-w-których-plikach).
 
 ### Logowanie (wymóg prowadzącego)
 

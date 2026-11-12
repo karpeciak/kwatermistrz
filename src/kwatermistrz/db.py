@@ -3,8 +3,9 @@
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
+from pathlib import Path
 
-from sqlalchemy import create_engine, event
+from sqlalchemy import Engine, create_engine, event, inspect
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from .config import settings
@@ -42,7 +43,24 @@ def sesja() -> Iterator[Session]:
         s.close()
 
 
-def utworz_schemat() -> None:
-    from . import models  # noqa: F401 – rejestruje tabele w metadanych
+WERSJA_BAZOWA = "0001"  # schemat sprzed wprowadzenia migracji (utworzony przez create_all)
 
-    Base.metadata.create_all(engine)
+
+def migruj(silnik: Engine | None = None) -> None:
+    """Doprowadza schemat bazy do najnowszej wersji (Alembic). Uruchamiane przy starcie API."""
+    from alembic import command
+    from alembic.config import Config
+
+    silnik = silnik or engine
+    cfg = Config()
+    cfg.set_main_option("script_location", str(Path(__file__).parent / "migracje"))
+    with silnik.connect() as polaczenie:
+        if silnik.dialect.name == "sqlite":
+            # przebudowa tabel w SQLite (batch) wymaga wyłączonych kluczy obcych na czas migracji
+            polaczenie.exec_driver_sql("PRAGMA foreign_keys=OFF")
+        cfg.attributes["polaczenie"] = polaczenie
+        tabele = inspect(polaczenie).get_table_names()
+        if "delegacja" in tabele and "alembic_version" not in tabele:
+            command.stamp(cfg, WERSJA_BAZOWA)  # baza istniała przed migracjami – oznaczamy jej wersję
+        command.upgrade(cfg, "head")
+        polaczenie.commit()

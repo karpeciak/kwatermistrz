@@ -19,7 +19,7 @@ class WniosekIn(BaseModel):
 
 class DecyzjaIn(BaseModel):
     id_osoby: str
-    decyzja: Literal["Zgoda", "Odmowa"]
+    decyzja: Literal["Zgoda", "Odmowa", "Do uzupełnienia"]
     uzasadnienie: str | None = None
 
 
@@ -29,7 +29,8 @@ class DelegacjaOut(BaseModel):
     id_delegacji: str
     id_zolnierza: str
     status: str
-    data_zlozenia: datetime
+    data_zmiany_statusu: datetime | None
+    data_zlozenia: datetime | None
     cel_wyjazdu: str | None
     miejsce_docelowe: str | None
     data_wyjazdu: date | None

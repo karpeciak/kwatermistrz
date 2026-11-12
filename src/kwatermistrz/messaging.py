@@ -11,19 +11,39 @@ from aio_pika.abc import AbstractIncomingMessage
 
 
 class Typ:
-    """Klucze routingu komunikatów."""
+    """Klucze routingu komunikatów.
 
+    Konwencja: `zadanie.*` – Koordynator zleca pracę agentowi, `wynik.*` – agent odsyła wynik Koordynatorowi,
+    `decyzja.*`, `wybor.*`, `akceptacja.*` – działanie człowieka przyjęte przez API.
+    """
+
+    # Wniosek (S22IT1S0P2-33)
     WNIOSEK_ZLOZONY = "wniosek.zlozony"
     ZADANIE_WALIDACJI = "zadanie.walidacja"
     WYNIK_WALIDACJI = "wynik.walidacja"
+    # Zatwierdzenie (S22IT1S0P2-13, -14, -35)
     ZADANIE_ZATWIERDZENIA = "zadanie.zatwierdzenie"
     DECYZJA_PRZELOZONEGO = "decyzja.przelozonego"
     WYNIK_ZATWIERDZENIA = "wynik.zatwierdzenie"
+    # Organizacja wyjazdu (S22IT1S0P2-38, -27, -39)
+    ZADANIE_POLECENIA = "zadanie.polecenie"
+    WYNIK_POLECENIA = "wynik.polecenie"
     ZADANIE_TRANSPORTU = "zadanie.transport"
+    WYBOR_TRANSPORTU = "wybor.transport"
+    WYNIK_TRANSPORTU = "wynik.transport"
     ZADANIE_ZAKWATEROWANIA = "zadanie.zakwaterowanie"
+    WYBOR_ZAKWATEROWANIA = "wybor.zakwaterowanie"
+    WYNIK_ZAKWATEROWANIA = "wynik.zakwaterowanie"
+    # Realizacja (sprint 3)
     ZADANIE_MONITOROWANIA = "zadanie.monitorowanie"
+    # Rozliczenie (S22IT1S0P2-36, -20, -43)
     ZADANIE_ROZLICZENIA = "zadanie.rozliczenie"
-    ZADANIE_KONTROLI = "zadanie.kontrola"
+    WYNIK_ROZLICZENIA = "wynik.rozliczenie"
+    ZADANIE_WERYFIKACJI = "zadanie.weryfikacja"
+    WYNIK_WERYFIKACJI = "wynik.weryfikacja"
+    AKCEPTACJA_ROZLICZENIA = "akceptacja.rozliczenia"
+    WYNIK_PRZEKAZANIA = "wynik.przekazanie"
+
     POWIADOMIENIE = "powiadomienie"
 
 

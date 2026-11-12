@@ -1,4 +1,4 @@
-"""Agent Wniosków – walidacja kompletności i spójności wniosku (S22IT1S0P2-7…-12)."""
+"""Agent Wniosków – walidacja wniosku (S22IT1S0P2-7…-12, -33) i polecenie wyjazdu (S22IT1S0P2-38, w polecenie.py)."""
 
 from dataclasses import asdict
 
@@ -9,6 +9,7 @@ from ..messaging import Komunikat, Typ
 from ..models import Zolnierz
 from ..walidacja import parsuj_date, waliduj_wniosek
 from .base import Agent, Kontekst, pobierz_delegacje
+from .polecenie import sporzadz_polecenie
 
 
 class AgentWnioskow(Agent):
@@ -18,7 +19,10 @@ class AgentWnioskow(Agent):
     wersja_modelu = "walidacja-1.0"
 
     def obslugi(self):
-        return {Typ.ZADANIE_WALIDACJI: (self.waliduj, "Walidacja wniosku")}
+        return {
+            Typ.ZADANIE_WALIDACJI: (self.waliduj, "Walidacja wniosku"),
+            Typ.ZADANIE_POLECENIA: (sporzadz_polecenie, "Sporządzenie polecenia wyjazdu"),
+        }
 
     def waliduj(self, s: Session, k: Komunikat, ktx: Kontekst) -> None:
         d = pobierz_delegacje(s, k.id_delegacji)
