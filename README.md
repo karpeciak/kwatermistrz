@@ -81,26 +81,28 @@ gałęzie i pull requesty.
 
 ## Uruchomienie lokalne
 
-**Testy** – bez Dockera (SQLite i atrapa brokera), wystarczy Python:
+**Testy** – bez Dockera (SQLite i atrapa brokera), wystarczy Python i środowisko z [CONTRIBUTING.md](CONTRIBUTING.md):
 
 ```bash
-pytest
+.venv\Scripts\python -m pytest
 ```
 
-**Cały system** (API, agenci, PostgreSQL, RabbitMQ) – wymaga Docker Desktop:
+**Cały system** (API, interfejs, agenci, PostgreSQL, RabbitMQ) – wymaga Docker Desktop:
 
 ```bash
 docker compose up --build
 ```
 
+- Aplikacja: http://localhost:8000/app
 - API i dokumentacja: http://localhost:8000/docs
 - Panel RabbitMQ: http://localhost:15672 (guest / guest)
 
-Praca nad jednym agentem przy działających usługach:
+Praca nad jednym agentem przy działających usługach (agent uruchomiony lokalnie, reszta w Dockerze):
 
 ```bash
 docker compose up -d postgres rabbitmq api
-kwatermistrz-agenci zatwierdzenia
+copy .env.example .env
+.venv\Scripts\kwatermistrz-agenci zatwierdzenia
 ```
 
 ## Wdrożenie
