@@ -47,7 +47,9 @@ if (-not $istnieje) { & $az postgres flexible-server db create -g $RG -s $PG -n 
 
 $DB_URL = "postgresql+psycopg://kwadmin:$PG_HASLO@$PG.postgres.database.azure.com:5432/kwatermistrz?sslmode=require"
 
-$wersja = "r" + (Get-Date -Format "MMddHHmmss")   # nowa rewizja, żeby aplikacja wczytała nowe sekrety
+# Zmiana zmiennej WDROZENIE tworzy nową rewizję, więc aplikacja wczytuje nowe sekrety
+# (środowisko typu Express nie obsługuje --revision-suffix)
+$wersja = Get-Date -Format "yyyyMMddHHmmss"
 
 function Utworz-LubZaktualizuj([string]$nazwa, [string[]]$tylkoPrzyTworzeniu, [string[]]$polecenie) {
     $jest = & $az containerapp list -g $RG --query "[?name=='$nazwa'].name" -o tsv
@@ -55,7 +57,7 @@ function Utworz-LubZaktualizuj([string]$nazwa, [string[]]$tylkoPrzyTworzeniu, [s
         Write-Host "    $nazwa istnieje – aktualizacja sekretów i obrazu"
         & $az containerapp secret set -g $RG -n $nazwa --secrets "db-url=$DB_URL" "amqp-url=$AMQP_URL" --only-show-errors -o none
         & $az containerapp registry set -g $RG -n $nazwa --server ghcr.io --username $GH_LOGIN --password $GH_TOKEN --only-show-errors -o none
-        & $az containerapp update -g $RG -n $nazwa --image $IMG --revision-suffix $wersja @polecenie --only-show-errors -o none
+        & $az containerapp update -g $RG -n $nazwa --image $IMG --set-env-vars "WDROZENIE=$wersja" @polecenie --only-show-errors -o none
     } else {
         & $az containerapp create -g $RG -n $nazwa --environment $ENVNAME --image $IMG `
             --registry-server ghcr.io --registry-username $GH_LOGIN --registry-password $GH_TOKEN `
@@ -72,7 +74,7 @@ Utworz-LubZaktualizuj "kw-api" @("--target-port", "8000", "--ingress", "external
 
 Write-Host "[3/4] Aplikacja kw-agenci..." -ForegroundColor Cyan
 Utworz-LubZaktualizuj "kw-agenci" @("--min-replicas", "1", "--max-replicas", "1") `
-    @("--command", "kwatermistrz-agenci")
+    @("--command", "kwatermistrz-agenci", "--args", "all")   # bez --args Azure dokleja CMD obrazu (uvicorn …)
 
 $FQDN = & $az containerapp show -g $RG -n kw-api --query properties.configuration.ingress.fqdn -o tsv
 Write-Host "[4/4] Gotowe." -ForegroundColor Green

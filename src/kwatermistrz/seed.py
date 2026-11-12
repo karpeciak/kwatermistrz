@@ -65,28 +65,30 @@ def zaladuj_dane_poczatkowe(s: Session) -> None:
         )
     )
     s.flush()
-    s.add_all(
-        [
-            Zolnierz(
-                id_zolnierza="ZOL-001",
-                stopien="ppłk",
-                imie_nazwisko="Michał Stępień",
-                id_jednostki="JW-1001",
-                pododdzial="dowództwo",
-                funkcja="Dowódca jednostki",
-                id_zastepcy="ZOL-002",
-            ),
-            Zolnierz(
-                id_zolnierza="ZOL-002",
-                stopien="mjr",
-                imie_nazwisko="Robert Tomaszewski",
-                id_jednostki="JW-1001",
-                pododdzial="dowództwo",
-                funkcja="Zastępca dowódcy",
-                id_przelozonego="ZOL-001",
-            ),
-        ]
+    # Dowódca i zastępca wskazują na siebie nawzajem – zastępcę dowódcy ustawiamy dopiero, gdy obaj są w bazie
+    dowodca = Zolnierz(
+        id_zolnierza="ZOL-001",
+        stopien="ppłk",
+        imie_nazwisko="Michał Stępień",
+        id_jednostki="JW-1001",
+        pododdzial="dowództwo",
+        funkcja="Dowódca jednostki",
     )
+    s.add(dowodca)
+    s.flush()
+    s.add(
+        Zolnierz(
+            id_zolnierza="ZOL-002",
+            stopien="mjr",
+            imie_nazwisko="Robert Tomaszewski",
+            id_jednostki="JW-1001",
+            pododdzial="dowództwo",
+            funkcja="Zastępca dowódcy",
+            id_przelozonego="ZOL-001",
+        )
+    )
+    s.flush()
+    dowodca.id_zastepcy = "ZOL-002"
     s.flush()
     s.add_all(
         [
