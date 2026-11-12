@@ -59,6 +59,11 @@ def pobierz_delegacje(s: Session, id_delegacji: str | None) -> Delegacja:
     return d
 
 
+def do_zrobienia(ktx: Kontekst, historyjka: str) -> None:
+    """Zaślepka zadania, które jest dopiero implementowane – przyjmuje je i odnotowuje w logu operacji."""
+    ktx.ostrzezenie(f"Zadanie przyjęte – implementacja w ramach {historyjka}")
+
+
 class Agent(ABC):
     id_agenta: str
     nazwa: str

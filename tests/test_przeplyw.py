@@ -42,7 +42,7 @@ def test_poprawny_wniosek_trafia_do_przelozonego_i_jest_zatwierdzany(broker):
     asyncio.run(broker.dostarczaj(zespol))
 
     d = delegacja(id_d)
-    assert d.status == Status.OCZEKUJE
+    assert d.status == Status.W_AKCEPTACJI
     assert d.id_zatwierdzajacego == "ZOL-001"
     assert d.data_powrotu.isoformat() == "2026-12-11"
 
@@ -50,27 +50,27 @@ def test_poprawny_wniosek_trafia_do_przelozonego_i_jest_zatwierdzany(broker):
         Komunikat(typ=Typ.DECYZJA_PRZELOZONEGO, id_delegacji=id_d, dane={"id_osoby": "ZOL-001", "decyzja": "Zgoda"})
     )
     asyncio.run(broker.dostarczaj(zespol))
-    assert delegacja(id_d).status == Status.ZATWIERDZONA
+    assert delegacja(id_d).status == Status.ZATWIERDZONY
 
     with sesja() as s:
         operacje = s.scalars(select(LogOperacji).where(LogOperacji.id_delegacji == id_d)).all()
         agenci_w_logu = {o.id_agenta for o in operacje}
         decyzje = s.scalars(select(LogDecyzji.typ_decyzji)).all()
-    # Koordynator, Wnioski, Zatwierdzenia oraz przyjęcie zadań przez Transport i Zakwaterowanie
+    # Koordynator, Wnioski (walidacja i polecenie), Zatwierdzenia, Transport i Zakwaterowanie
     assert agenci_w_logu == {"AG-01", "AG-02", "AG-03", "AG-04", "AG-05"}
     assert all(o.id_korelacji == f"COR-{id_d}" for o in operacje)
     assert "Walidacja wniosku" in decyzje
 
 
-def test_niepoprawny_wniosek_wraca_do_poprawy(broker):
+def test_niepoprawny_wniosek_wraca_do_uzupelnienia(broker):
     id_d = utworz_delegacje({**WNIOSEK, "cel_wyjazdu": ""})
     broker.wyslane.append(Komunikat(typ=Typ.WNIOSEK_ZLOZONY, id_delegacji=id_d))
     asyncio.run(broker.dostarczaj(agenci(broker)))
-    assert delegacja(id_d).status == Status.DO_POPRAWY
+    assert delegacja(id_d).status == Status.DO_UZUPELNIENIA
 
 
 def test_ponowna_decyzja_jest_pomijana_s14(broker):
-    id_d = utworz_delegacje(status=Status.OCZEKUJE, id_zatwierdzajacego="ZOL-001")
+    id_d = utworz_delegacje(status=Status.W_AKCEPTACJI, id_zatwierdzajacego="ZOL-001")
     zespol = agenci(broker)
     decyzja = {"id_osoby": "ZOL-001", "decyzja": "Zgoda"}
     for _ in range(2):
@@ -82,12 +82,12 @@ def test_ponowna_decyzja_jest_pomijana_s14(broker):
             select(LogOperacji.wynik).where(LogOperacji.operacja == "Rejestracja decyzji przełożonego")
         ).all()
     assert wyniki == ["Sukces", "Ostrzeżenie"]
-    assert delegacja(id_d).status == Status.ZATWIERDZONA
+    assert delegacja(id_d).status == Status.ZATWIERDZONY
 
 
 def test_brak_decyzji_przypomnienie_potem_eskalacja_do_zastepcy_s13(broker):
     przeszlosc = teraz() - timedelta(minutes=1)
-    id_d = utworz_delegacje(status=Status.OCZEKUJE, id_zatwierdzajacego="ZOL-001", termin_decyzji=przeszlosc)
+    id_d = utworz_delegacje(status=Status.W_AKCEPTACJI, id_zatwierdzajacego="ZOL-001", termin_decyzji=przeszlosc)
     agent = AGENCI["zatwierdzenia"](broker)
 
     def uplyw_terminu():

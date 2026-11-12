@@ -50,6 +50,7 @@ class AgentZatwierdzen(Agent):
             return
         d.decyzja = k.dane["decyzja"]
         d.data_decyzji = teraz()
+        d.uzasadnienie_decyzji = k.dane.get("uzasadnienie")
         ktx.opis = f"{d.decyzja} – {id_osoby}"
         ktx.wyslij(Typ.WYNIK_ZATWIERDZENIA, {"decyzja": d.decyzja, "id_osoby": id_osoby})
 
@@ -59,7 +60,7 @@ class AgentZatwierdzen(Agent):
         with sesja() as s:
             ids = s.scalars(
                 select(Delegacja.id_delegacji).where(
-                    Delegacja.status == Status.OCZEKUJE,
+                    Delegacja.status == Status.W_AKCEPTACJI,
                     Delegacja.decyzja.is_(None),
                     Delegacja.termin_decyzji < teraz(),
                 )

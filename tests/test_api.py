@@ -29,7 +29,7 @@ def test_health(klient):
 def test_zlozenie_wniosku_publikuje_zdarzenie(klient, broker):
     r = klient.post("/wnioski", json=WNIOSEK)
     assert r.status_code == 202
-    assert r.json()["status"] == "Złożony"
+    assert r.json()["status"] == "złożony"
     assert broker.typy() == ["wniosek.zlozony"]
 
 

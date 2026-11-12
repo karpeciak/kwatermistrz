@@ -10,7 +10,7 @@ os.environ["POLACZ_BROKER"] = "false"
 import pytest  # noqa: E402
 
 from kwatermistrz import models  # noqa: E402, F401
-from kwatermistrz.db import Base, engine, sesja, utworz_schemat  # noqa: E402
+from kwatermistrz.db import Base, engine, migruj, sesja  # noqa: E402
 from kwatermistrz.messaging import Komunikat  # noqa: E402
 from kwatermistrz.seed import zaladuj_dane_poczatkowe  # noqa: E402
 
@@ -44,7 +44,9 @@ class AtrapaBrokera:
 @pytest.fixture(autouse=True)
 def baza():
     Base.metadata.drop_all(engine)
-    utworz_schemat()
+    with engine.begin() as polaczenie:
+        polaczenie.exec_driver_sql("DROP TABLE IF EXISTS alembic_version")
+    migruj()  # baza testowa powstaje tymi samymi migracjami co w Azure
     with sesja() as s:
         zaladuj_dane_poczatkowe(s)
 
