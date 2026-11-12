@@ -1,109 +1,100 @@
 # Kwatermistrz
 
-Wieloagentowy system obsługi wyjazdów służbowych w wojsku – od wniosku do rozliczenia.
-Projekt S22IT1S0P2 (WAT).
+Wieloagentowy system obsługi wyjazdów służbowych w wojsku – od wniosku, przez zatwierdzenie i organizację wyjazdu,
+do rozliczenia należności. Projekt zespołowy S22IT1S0P2 (WAT), Product Owner: Kacper (`karpeciak`).
 
-## Aplikacja online
+## Gdzie co znajdziesz
 
-**Aplikacja:** https://kw-api.livelyflower-540bc67c.francecentral.azurecontainerapps.io/app
+| Potrzebujesz… | Zajrzyj do |
+|---|---|
+| Zobaczyć działającą aplikację | https://kw-api.livelyflower-540bc67c.francecentral.azurecontainerapps.io/app |
+| Dokumentację API (interaktywną) | https://kw-api.livelyflower-540bc67c.francecentral.azurecontainerapps.io/docs |
+| **Zacząć pracę jako deweloper** – instalacja, pierwsze uruchomienie, gałęzie, pull requesty, migracje bazy | [CONTRIBUTING.md](CONTRIBUTING.md) |
+| Sprawdzić, kto w sprincie pracuje w których plikach | [CONTRIBUTING.md – Sprint 1](CONTRIBUTING.md#sprint-1--kto-pracuje-w-których-plikach) |
+| Administrować środowiskiem w Azure (logi, wersje, koszty, odtworzenie) | [infra/azure.md](infra/azure.md) |
+| Historyjki i backlog | Jira, tablica S22IT1S0P2 |
 
-1. Zaloguj się jako wnioskodawca, np. **por. Magdalena Szewczyk (ZOL-003)** – tryb demonstracyjny, bez hasła.
-2. **Nowy wniosek** → wybierz przedsięwzięcie z harmonogramu → **Złóż wniosek**. Strona wniosku sama się odświeża,
-   gdy agenci go sprawdzają; w **Historii obsługi** widać każdy krok i decyzję agentów.
-3. **Wyloguj** i zaloguj się jako przełożony **ppłk Michał Stępień (ZOL-001)** → **Do zatwierdzenia** →
-   **Zatwierdź**, **Do uzupełnienia** albo **Odrzuć** (z uzasadnieniem).
+Wersja online odpowiada gałęzi `main` i aktualizuje się automatycznie po scaleniu pull requesta. Logowanie w aplikacji
+jest demonstracyjne (wybór osoby, bez hasła): wnioskodawca – np. **por. Magdalena Szewczyk (ZOL-003)**,
+przełożony zatwierdzający – **ppłk Michał Stępień (ZOL-001)**. Po dłuższej przerwie pierwsze wejście trwa
+kilka–kilkanaście sekund.
 
-**API (dla deweloperów):** https://kw-api.livelyflower-540bc67c.francecentral.azurecontainerapps.io/docs –
-interaktywna dokumentacja, przy każdej operacji **Try it out** → **Execute**.
-
-Wersja online zawsze odpowiada gałęzi `main` – aktualizuje się automatycznie po scaleniu pull requesta.
-Po dłuższej przerwie pierwsze wywołanie trwa kilka–kilkanaście sekund (aplikacja usypia się, gdy nikt jej nie używa).
-
-Dane przykładowe: jednostka `JW-1001`, żołnierze `ZOL-001` (dowódca), `ZOL-002` (zastępca dowódcy), `ZOL-003`…`ZOL-006`
-(przełożony: `ZOL-001`), przedsięwzięcia `PRZ-01` (Toruń), `PRZ-02` (Zegrze), `PRZ-03` (Kraków).
-
-Przepływ do wypróbowania:
-
-1. `POST /wnioski` z treścią:
-   ```json
-   {"id_zolnierza": "ZOL-003", "id_przedsiewziecia": "PRZ-01", "cel_wyjazdu": "Szkolenie z logistyki",
-    "miejsce_docelowe": "Toruń", "data_wyjazdu": "2026-12-07", "data_powrotu": "2026-12-11",
-    "srodek_transportu": "pociąg"}
-   ```
-   Zapamiętaj `id_delegacji` z odpowiedzi.
-2. `GET /delegacje/{id_delegacji}` – po chwili status `w akceptacji` (agenci zwalidowali wniosek
-   i przekazali go przełożonemu).
-3. `POST /delegacje/{id_delegacji}/decyzja` z treścią `{"id_osoby": "ZOL-001", "decyzja": "Zgoda"}` → status
-   `zatwierdzony`. Koordynator zleca wtedy polecenie wyjazdu, transport i zakwaterowanie.
-4. `GET /delegacje/{id_delegacji}/przebieg` – log operacji i decyzji każdego agenta.
-
-Wniosek z błędem (np. pusty `cel_wyjazdu` albo data powrotu przed datą wyjazdu) dostaje status `do uzupełnienia`,
-a uzasadnienie widać w przebiegu.
-
-Etapy obsługi (S22IT1S0P2-32): `roboczy` → `złożony` → `w akceptacji` → `zatwierdzony` → `zorganizowany` →
-`w trakcie` → `do rozliczenia` → `rozliczony`; boczne: `do uzupełnienia`, `odrzucony`.
-
-## Architektura
+## Jak to działa
 
 ```
-klient ──HTTP──▶ API (FastAPI) ──▶ RabbitMQ (exchange „kwatermistrz”, topic) ──▶ agenci
-                     │                                                          │
-                     └──────────────────▶ PostgreSQL ◀──────────────────────────┘
-                                         (model z Excela + LogOperacji + LogDecyzji)
+przeglądarka ──▶ kw-api: interfejs (/app) + API (/docs) ──▶ RabbitMQ ──▶ kw-agenci
+                              │                                              │
+                              └────────────────▶ PostgreSQL ◀────────────────┘
 ```
 
-| Agent | Kolejka | Stan |
+- **Agenci** to niezależne części systemu, każdy odpowiada za jeden etap (wniosek, zatwierdzenie, transport,
+  zakwaterowanie, rozliczenie, zgodność, monitorowanie). Komunikują się wyłącznie wiadomościami przez RabbitMQ.
+- **Koordynator** prowadzi delegację przez etapy: roboczy → złożony → w akceptacji → zatwierdzony → zorganizowany →
+  w trakcie → do rozliczenia → rozliczony (oraz do uzupełnienia / odrzucony).
+- **Logi:** każda operacja agenta trafia do `log_operacji`, każda decyzja (z uzasadnieniem, pewnością i wersją modelu)
+  do `log_decyzji`. Przebieg wniosku widać w aplikacji w „Historii obsługi”.
+- **Technologie:** Python, FastAPI, SQLAlchemy + Alembic, Jinja2 + HTMX, RabbitMQ, PostgreSQL, Docker,
+  GitHub Actions, Azure Container Apps.
+
+## Struktura repozytorium
+
+```
+kwatermistrz/
+├── README.md                 ← ten plik: przegląd projektu
+├── CONTRIBUTING.md           ← instrukcja dla deweloperów
+├── pyproject.toml            ← zależności i konfiguracja narzędzi (pytest, ruff)
+├── alembic.ini               ← konfiguracja migracji bazy
+├── Dockerfile                ← obraz aplikacji (API i agenci – jeden obraz)
+├── docker-compose.yml        ← cały system lokalnie (wymaga Dockera)
+├── .env.example              ← wzór ustawień przy uruchamianiu poza Dockerem
+├── .github/
+│   ├── workflows/ci.yml      ← CI/CD: testy → obraz → wdrożenie do Azure
+│   ├── pull_request_template.md
+│   └── CODEOWNERS            ← kto przegląda pull requesty
+├── infra/                    ← środowisko w Azure (dla administratora)
+│   ├── azure.md              ← opis środowiska i typowe zadania
+│   ├── utworz-aplikacje.ps1  ← tworzenie / aktualizacja bazy i aplikacji
+│   └── wdrazanie-github.ps1  ← konfiguracja automatycznego wdrażania
+├── src/kwatermistrz/         ← kod aplikacji
+│   ├── agents/               ← agenci – jeden plik na agenta / historyjkę
+│   ├── api/                  ← API (FastAPI) – moduł na obszar procesu
+│   ├── web/                  ← interfejs użytkownika (/app): strony, szablony, styl
+│   ├── migracje/             ← migracje bazy (Alembic)
+│   ├── models.py             ← model danych (tabele)
+│   ├── messaging.py          ← typy komunikatów i połączenie z RabbitMQ
+│   ├── audit.py              ← zapis logu operacji i decyzji
+│   ├── walidacja.py          ← reguły sprawdzania wniosku
+│   ├── stawki.py             ← stawki i limity należności
+│   ├── seed.py               ← dane przykładowe i słownikowe
+│   ├── db.py, config.py      ← połączenie z bazą, ustawienia
+└── tests/                    ← testy (pytest) – uruchamiane w CI przy każdym pull requeście
+```
+
+### Agenci (`src/kwatermistrz/agents/`)
+
+| Plik | Agent | Za co odpowiada |
 |---|---|---|
-| AG-01 Koordynator | `kwatermistrz.koordynator` | działa – pełny przebieg delegacji, przejścia według dat |
-| AG-02 Agent Wniosków | `kwatermistrz.wnioski` | walidacja działa (S22IT1S0P2-7…12); w sprincie 1: -33, polecenie wyjazdu -38 |
-| AG-03 Agent Zatwierdzeń | `kwatermistrz.zatwierdzenia` | działa – przełożony, eskalacja (-13), jednokrotna decyzja (-14); w sprincie 1: -35 |
-| AG-04 Agent Transportu | `kwatermistrz.transport` | sprint 1: S22IT1S0P2-27 |
-| AG-05 Agent Zakwaterowania | `kwatermistrz.zakwaterowanie` | sprint 1: S22IT1S0P2-39 |
-| AG-06 Agent Rozliczeń | `kwatermistrz.rozliczenia` | sprint 1: S22IT1S0P2-36, -20 |
-| AG-07 Agent Zgodności | `kwatermistrz.zgodnosc` | sprint 1: S22IT1S0P2-43 |
-| AG-08 Agent Monitorujący | `kwatermistrz.monitorujacy` | sprint 3 |
+| `koordynator.py` | AG-01 Koordynator | przebieg delegacji przez etapy, zlecanie zadań |
+| `wnioski.py`, `polecenie.py` | AG-02 Agent Wniosków | sprawdzenie wniosku, polecenie wyjazdu |
+| `zatwierdzenia.py` | AG-03 Agent Zatwierdzeń | przełożony, przypomnienia, zastępstwo, jednokrotna decyzja |
+| `transport.py` | AG-04 Agent Transportu | porównanie i wybór wariantu podróży |
+| `zakwaterowanie.py` | AG-05 Agent Zakwaterowania | dobór noclegu w limicie z terminowym dojazdem |
+| `rozliczenia.py`, `dokumenty_kosztowe.py` | AG-06 Agent Rozliczeń | wyliczenie należności, wykrywanie duplikatów |
+| `zgodnosc.py` | AG-07 Agent Zgodności | weryfikacja wyliczenia, przekazanie do finansów |
+| `monitorujacy.py` | AG-08 Agent Monitorujący | zmiany w trakcie wyjazdu (sprint 3) |
+| `base.py`, `run.py` | – | wspólna obsługa agentów (logi, ponowienia), uruchamianie |
 
-Zadania jeszcze nieimplementowane są przyjmowane i odnotowywane w logu z numerem historyjki, żeby przebieg
-był widoczny od początku. Podział pracy w sprincie 1: [CONTRIBUTING.md](CONTRIBUTING.md#sprint-1--kto-pracuje-w-których-plikach).
+Na górze każdego pliku agenta jest opis, co ma robić w ramach swojej historyjki.
 
-### Logowanie (wymóg prowadzącego)
+### API (`src/kwatermistrz/api/`) i interfejs (`src/kwatermistrz/web/`)
 
-Każda obsługa komunikatu przez agenta zapisuje wpis w **`log_operacji`** (czas, agent, operacja, wynik,
-czas trwania, numer próby, komunikat). Każda decyzja agenta trafia do **`log_decyzji`**: rodzaj (regułowa /
-probabilistyczna), liczba wariantów, wybór, uzasadnienie, pewność i wersja modelu. Decyzja probabilistyczna
-o pewności < 0,75 lub decyzja finansowa ponad limit ma `wymaga_zatwierdzenia = true`.
-`log_decyzji` wskazuje tylko na `log_operacji` – w modelu nie ma cyklu z encją log.
-
-## Praca w zespole
-
-Nowa osoba w zespole: [CONTRIBUTING.md](CONTRIBUTING.md) – instalacja, pierwsze uruchomienie testów,
-gałęzie i pull requesty.
-
-## Uruchomienie lokalne
-
-**Testy** – bez Dockera (SQLite i atrapa brokera), wystarczy Python:
-
-```bash
-pytest
-```
-
-**Cały system** (API, agenci, PostgreSQL, RabbitMQ) – wymaga Docker Desktop:
-
-```bash
-docker compose up --build
-```
-
-- API i dokumentacja: http://localhost:8000/docs
-- Panel RabbitMQ: http://localhost:15672 (guest / guest)
-
-Praca nad jednym agentem przy działających usługach:
-
-```bash
-docker compose up -d postgres rabbitmq api
-kwatermistrz-agenci zatwierdzenia
-```
-
-## Wdrożenie
-
-Scalenie do `main` → GitHub Actions: testy → obraz Docker w GitHub Container Registry → automatyczna
-aktualizacja Azure Container Apps. Administracja środowiskiem Azure: [infra/azure.md](infra/azure.md).
+| Plik | Zawartość |
+|---|---|
+| `api/main.py` | składanie aplikacji, start (migracje, dane), `/health` |
+| `api/wnioski.py` | składanie wniosku, podgląd, przebieg |
+| `api/zatwierdzenia.py` | decyzje przełożonego |
+| `api/organizacja.py` | polecenie wyjazdu, przejazd, zakwaterowanie |
+| `api/rozliczenia.py` | rozliczenie, dokumenty, weryfikacja |
+| `web/strony.py` | trasy stron `/app/…` |
+| `web/szablony/` | szablony HTML (Jinja2) |
+| `web/statyczne/` | arkusz stylów |

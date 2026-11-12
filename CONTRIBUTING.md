@@ -17,7 +17,12 @@ twoja gałąź → push → pull request → CI (testy) → przegląd PO → mer
 | VS Code | `winget install --id Microsoft.VisualStudioCode -e` | `code --version` |
 | GitHub CLI (opcjonalnie) | `winget install --id GitHub.cli -e` | `gh --version` |
 
-Po instalacji zamknij i otwórz ponownie terminal. W VS Code zainstaluj rozszerzenia:
+Po instalacji zamknij i otwórz ponownie terminal.
+
+> Jeśli `python --version` otwiera Microsoft Store albo zgłasza błąd, środowisko w kroku 3 utwórz poleceniem
+> `py -3.12 -m venv .venv` zamiast `python -m venv .venv` – dalej wszystkie polecenia używają `.venv\Scripts\python`.
+
+W VS Code zainstaluj rozszerzenia:
 
 ```bash
 code --install-extension ms-python.python
@@ -48,7 +53,8 @@ python -m venv .venv
 .venv\Scripts\python -m pytest
 ```
 
-Na końcu powinno być `18 passed` (lub więcej). Na Linuxie/macOS zamiast `.venv\Scripts\python` użyj `.venv/bin/python`.
+Na końcu powinno być `… passed` bez żadnego `failed` ani `error`. Na Linuxie/macOS zamiast `.venv\Scripts\python`
+użyj `.venv/bin/python`.
 
 W VS Code: **File → Open Folder** → `kwatermistrz`, potem `Ctrl+Shift+P` → *Python: Select Interpreter* → `.venv`.
 Wbudowany terminal VS Code sam użyje tego środowiska.
@@ -56,14 +62,39 @@ Wbudowany terminal VS Code sam użyje tego środowiska.
 > Jeśli PowerShell zgłasza „running scripts is disabled” przy aktywacji `.venv\Scripts\activate`,
 > nie musisz niczego zmieniać – używaj poleceń z pełną ścieżką jak wyżej (`.venv\Scripts\python -m …`).
 
+### Cały system lokalnie (opcjonalnie, Docker)
+
+Do codziennej pracy wystarczą testy. Jeśli masz Docker Desktop, możesz uruchomić całość (API, interfejs, agenci,
+PostgreSQL, RabbitMQ) na swoim komputerze:
+
+```bash
+docker compose up --build
+```
+
+- aplikacja: http://localhost:8000/app
+- API i dokumentacja: http://localhost:8000/docs
+- panel RabbitMQ: http://localhost:15672 (guest / guest)
+
+Praca nad jednym agentem – usługi w Dockerze, agent uruchomiony z Twojego środowiska (zmiany w kodzie bez
+przebudowy obrazu):
+
+```bash
+docker compose up -d postgres rabbitmq api
+copy .env.example .env
+.venv\Scripts\kwatermistrz-agenci zatwierdzenia
+```
+
 ## 4. Codzienna praca
 
 1. Weź historyjkę z Jiry i zacznij od aktualnego `main`:
    ```bash
    git switch main
    git pull
+   .venv\Scripts\python -m pip install -e ".[dev]"
    git switch -c feature/S22IT1S0P2-15-zakwaterowanie
    ```
+   Instalacja po `git pull` dociąga biblioteki, które ktoś dodał do `pyproject.toml` – bez niej testy mogą
+   zgłaszać `ModuleNotFoundError`.
 2. Commituj małymi krokami, z kluczem historyjki na początku:
    ```bash
    git add .
@@ -79,6 +110,8 @@ Wbudowany terminal VS Code sam użyje tego środowiska.
    ```bash
    git push -u origin feature/S22IT1S0P2-15-zakwaterowanie
    ```
+   Przy pierwszym `git push` Git otworzy okno logowania do GitHuba – zaloguj się przez przeglądarkę
+   (albo wcześniej `gh auth login`, jeśli masz GitHub CLI).
 5. Na GitHubie kliknij **Compare & pull request**, uzupełnij szablon (klucz historyjki, co zmieniasz, jak sprawdzić).
    Product Owner dostanie prośbę o przegląd automatycznie.
 6. Poczekaj na zielone CI (✔ przy pull requeście) i akceptację. Poprawki po recenzji wypychasz na tę samą gałąź –
@@ -97,8 +130,12 @@ Wbudowany terminal VS Code sam użyje tego środowiska.
    git merge main
    ```
 
-Po scaleniu Twoja zmiana jest po kilku minutach w wersji online (adres w [README.md](README.md#aplikacja-online)).
+Po scaleniu Twoja zmiana jest po kilku minutach w wersji online (adres w [README.md](README.md#gdzie-co-znajdziesz)).
 Postęp wdrożenia widać w zakładce **Actions** na GitHubie.
+
+**Sprawdzanie zmian w interfejsie (`/app`) przed scaleniem:** bez Dockera ekrany sprawdzasz testami – wzór
+w `tests/test_interfejs.py` (logowanie, wysłanie formularza, sprawdzenie treści strony). Z Docker Desktop możesz
+uruchomić cały system lokalnie – patrz [Cały system lokalnie](#cały-system-lokalnie-opcjonalnie-docker).
 
 ## Nazwy gałęzi
 
