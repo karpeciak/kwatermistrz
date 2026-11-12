@@ -155,6 +155,7 @@ czy delegacja może przejść dalej. Lista komunikatów: `messaging.py` (`Typ`).
 | Nowa tabela lub kolumna | `src/kwatermistrz/models.py` + migracja (niżej) |
 | Nowy typ komunikatu | `src/kwatermistrz/messaging.py` (`Typ`) |
 | Endpoint API | moduł obszaru w `src/kwatermistrz/api/` (schematy żądań/odpowiedzi możesz trzymać w tym samym module) |
+| Ekran interfejsu | `src/kwatermistrz/web/strony.py` (trasy `/app/...`) i szablony w `web/szablony/` (Jinja2 + HTMX); lista ekranów do zrobienia w historyjkach – docstring `strony.py` |
 | Dane przykładowe | `src/kwatermistrz/seed.py` |
 | Testy | `tests/test_<obszar>.py` – każda historyjka powinna mieć test |
 

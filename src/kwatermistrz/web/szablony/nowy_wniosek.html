@@ -1,0 +1,52 @@
+{% extends "baza.html" %}
+{% block tytul %}Nowy wniosek{% endblock %}
+{% block tresc %}
+<h2>Wniosek o wyjazd służbowy</h2>
+
+<form method="post" action="/app/wnioski/nowy">
+  <fieldset>
+    <legend><strong>Wnioskodawca</strong></legend>
+    <p>{{ uzytkownik.stopien }} {{ uzytkownik.imie_nazwisko }} · {{ uzytkownik.pododdzial or "" }} · {{ uzytkownik.id_jednostki }}</p>
+  </fieldset>
+
+  <label for="id_przedsiewziecia">Przedsięwzięcie z harmonogramu (opcjonalnie)
+    <select id="id_przedsiewziecia" name="id_przedsiewziecia">
+      <option value="">– inne, wpiszę dane poniżej –</option>
+      {% for p in przedsiewziecia %}
+      <option value="{{ p.id_przedsiewziecia }}">{{ p.nazwa }} · {{ p.miejscowosc }} · {{ p.data_rozpoczecia.strftime("%d.%m") }}–{{ p.data_zakonczenia.strftime("%d.%m.%Y") }}</option>
+      {% endfor %}
+    </select>
+    <small>Puste pola poniżej uzupełnimy danymi wybranego przedsięwzięcia.</small>
+  </label>
+
+  <div class="grid">
+    <label>Cel wyjazdu <input name="cel_wyjazdu" placeholder="np. szkolenie, kurs, odprawa"></label>
+    <label>Miejsce docelowe <input name="miejsce_docelowe" placeholder="miejscowość, jednostka"></label>
+  </div>
+  <div class="grid">
+    <label>Data wyjazdu <input type="date" name="data_wyjazdu"></label>
+    <label>Data powrotu <input type="date" name="data_powrotu"></label>
+  </div>
+  <div class="grid">
+    <label>Podstawa – numer rozkazu <input name="podstawa_numer_rozkazu" placeholder="np. Rozkaz dzienny nr 215/2026"></label>
+    <label>Data rozkazu <input type="date" name="podstawa_data_rozkazu"></label>
+  </div>
+  <div class="grid">
+    <label>Preferowany transport
+      <select name="srodek_transportu">
+        <option value="kolej">kolej</option>
+        <option value="transport wojskowy">transport wojskowy</option>
+        <option value="pojazd służbowy">pojazd służbowy</option>
+        <option value="samochód prywatny">pojazd prywatny</option>
+      </select>
+    </label>
+    <label class="checkbox-w-siatce">
+      <input type="checkbox" name="potrzeba_zakwaterowania" value="true" checked>
+      Potrzebuję zakwaterowania
+    </label>
+  </div>
+
+  <button type="submit">Złóż wniosek</button>
+  <small>Po złożeniu Agent Wniosków sprawdzi kompletność danych i przekaże wniosek przełożonemu.</small>
+</form>
+{% endblock %}

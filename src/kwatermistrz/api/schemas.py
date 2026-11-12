@@ -15,6 +15,9 @@ class WniosekIn(BaseModel):
     data_powrotu: str | None = Field(None, examples=["2026-12-11"])
     srodek_transportu: str | None = Field(None, examples=["pociąg"])
     dane_transportu: dict[str, str] = Field(default_factory=dict)
+    potrzeba_zakwaterowania: bool = True
+    podstawa_numer_rozkazu: str | None = Field(None, examples=["Rozkaz dzienny nr 215/2026"])
+    podstawa_data_rozkazu: str | None = Field(None, examples=["2026-11-10"])
 
 
 class DecyzjaIn(BaseModel):

@@ -1,0 +1,41 @@
+{% extends "baza.html" %}
+{% block tytul %}Moje wnioski{% endblock %}
+{% block tresc %}
+<div class="naglowek-strony">
+  <h2>Moje wnioski</h2>
+  <a href="/app/wnioski/nowy" role="button">Nowy wniosek</a>
+</div>
+
+{% if do_zatwierdzenia %}
+<p class="komunikat">Masz <strong>{{ do_zatwierdzenia }}</strong> wniosek(i) oczekujące na Twoją decyzję –
+  <a href="/app/do-zatwierdzenia">przejdź do zatwierdzania</a>.</p>
+{% endif %}
+
+{% if wnioski %}
+<div class="overflow-auto">
+<table>
+  <thead>
+    <tr><th>Numer</th><th>Cel</th><th>Miejsce</th><th>Termin</th><th>Status</th><th>Od</th></tr>
+  </thead>
+  <tbody>
+    {% for d in wnioski %}
+    {% set w = d.dane_wniosku %}
+    <tr>
+      <td class="bez-lamania"><a href="/app/wnioski/{{ d.id_delegacji }}">{{ d.id_delegacji }}</a></td>
+      <td>{{ d.cel_wyjazdu or w.get("cel_wyjazdu") or "–" }}</td>
+      <td>{{ d.miejsce_docelowe or w.get("miejsce_docelowe") or "–" }}</td>
+      <td><span class="bez-lamania">{{ w.get("data_wyjazdu") | data_pl }} – {{ w.get("data_powrotu") | data_pl }}</span></td>
+      <td><span class="status {{ d.status | klasa_statusu }}">{{ d.status }}</span></td>
+      <td>{{ d.data_zmiany_statusu | ile_czasu }} temu</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}
+<article class="pusto">
+  <p>Nie masz jeszcze żadnych wniosków o wyjazd służbowy.</p>
+  <a href="/app/wnioski/nowy" role="button">Złóż pierwszy wniosek</a>
+</article>
+{% endif %}
+{% endblock %}

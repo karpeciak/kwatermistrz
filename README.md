@@ -5,14 +5,22 @@ Projekt S22IT1S0P2 (WAT).
 
 ## Aplikacja online
 
-**https://kw-api.livelyflower-540bc67c.francecentral.azurecontainerapps.io/docs**
+**Aplikacja:** https://kw-api.livelyflower-540bc67c.francecentral.azurecontainerapps.io/app
 
-Strona `/docs` to interaktywna dokumentacja API: przy każdej operacji jest przycisk **Try it out** → **Execute**.
+1. Zaloguj się jako wnioskodawca, np. **por. Magdalena Szewczyk (ZOL-003)** – tryb demonstracyjny, bez hasła.
+2. **Nowy wniosek** → wybierz przedsięwzięcie z harmonogramu → **Złóż wniosek**. Strona wniosku sama się odświeża,
+   gdy agenci go sprawdzają; w **Historii obsługi** widać każdy krok i decyzję agentów.
+3. **Wyloguj** i zaloguj się jako przełożony **ppłk Michał Stępień (ZOL-001)** → **Do zatwierdzenia** →
+   **Zatwierdź**, **Do uzupełnienia** albo **Odrzuć** (z uzasadnieniem).
+
+**API (dla deweloperów):** https://kw-api.livelyflower-540bc67c.francecentral.azurecontainerapps.io/docs –
+interaktywna dokumentacja, przy każdej operacji **Try it out** → **Execute**.
+
 Wersja online zawsze odpowiada gałęzi `main` – aktualizuje się automatycznie po scaleniu pull requesta.
-Po dłuższej przerwie pierwsze wywołanie trwa kilka–kilkanaście sekund (API usypia się, gdy nikt go nie używa).
+Po dłuższej przerwie pierwsze wywołanie trwa kilka–kilkanaście sekund (aplikacja usypia się, gdy nikt jej nie używa).
 
-Dane przykładowe: jednostka `JW-1001`, żołnierze `ZOL-001` (dowódca), `ZOL-002` (zastępca dowódcy), `ZOL-003`,
-`ZOL-004` (przełożony: `ZOL-001`), przedsięwzięcie `PRZ-01` (szkolenie w Toruniu).
+Dane przykładowe: jednostka `JW-1001`, żołnierze `ZOL-001` (dowódca), `ZOL-002` (zastępca dowódcy), `ZOL-003`…`ZOL-006`
+(przełożony: `ZOL-001`), przedsięwzięcia `PRZ-01` (Toruń), `PRZ-02` (Zegrze), `PRZ-03` (Kraków).
 
 Przepływ do wypróbowania:
 

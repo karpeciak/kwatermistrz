@@ -11,6 +11,8 @@
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI
+from fastapi.responses import RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -20,6 +22,7 @@ from ..db import migruj, sesja
 from ..messaging import Broker
 from ..models import Zolnierz
 from ..seed import zaladuj_dane_poczatkowe
+from ..web import strony
 from . import organizacja, rozliczenia, wnioski, zatwierdzenia
 from .schemas import ZolnierzOut
 from .zaleznosci import get_broker, get_sesja
@@ -45,6 +48,15 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Kwatermistrz API", version=__version__, lifespan=lifespan)
 for modul in (wnioski, zatwierdzenia, organizacja, rozliczenia):
     app.include_router(modul.router)
+
+# Interfejs użytkownika (strony pod /app) – src/kwatermistrz/web/
+app.include_router(strony.router)
+app.mount("/statyczne", StaticFiles(directory=strony.KATALOG / "statyczne"), name="statyczne")
+
+
+@app.get("/", include_in_schema=False)
+def strona_glowna():
+    return RedirectResponse("/app", status_code=303)
 
 
 @app.get("/health", tags=["System"])

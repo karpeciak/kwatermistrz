@@ -1,0 +1,22 @@
+{% extends "baza.html" %}
+{% block tytul %}Logowanie{% endblock %}
+{% block tresc %}
+<article class="waski">
+  <header>
+    <h2>Zaloguj się</h2>
+    <p>Tryb demonstracyjny – wybierz osobę z ewidencji, w której imieniu chcesz pracować.</p>
+  </header>
+  <form method="post" action="/app/logowanie">
+    <label for="id_zolnierza">Żołnierz</label>
+    <select id="id_zolnierza" name="id_zolnierza" required>
+      {% for z in zolnierze %}
+      <option value="{{ z.id_zolnierza }}">{{ z.stopien }} {{ z.imie_nazwisko }} – {{ z.funkcja or "" }} ({{ z.id_zolnierza }})</option>
+      {% endfor %}
+    </select>
+    <button type="submit">Zaloguj</button>
+  </form>
+  <footer>
+    <small>Wnioskodawca: np. por. Magdalena Szewczyk (ZOL-003). Przełożony zatwierdzający: ppłk Michał Stępień (ZOL-001).</small>
+  </footer>
+</article>
+{% endblock %}

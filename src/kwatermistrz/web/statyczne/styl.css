@@ -1,0 +1,69 @@
+/* Kwatermistrz – uzupełnienia do Pico CSS (html[lang]:root – wygrywa z selektorami motywu Pico) */
+html[lang]:root {
+  --kw-oliwka: #4b5d2a;
+  --kw-oliwka-jasna: #e8eedc;
+  --pico-primary: var(--kw-oliwka);
+  --pico-primary-background: var(--kw-oliwka);
+  --pico-primary-border: var(--kw-oliwka);
+  --pico-primary-hover: #3a481f;
+  --pico-primary-hover-background: #3a481f;
+  --pico-primary-underline: rgba(75, 93, 42, 0.5);
+}
+
+@media (prefers-color-scheme: dark) {
+  html[lang]:root {
+    --kw-oliwka: #9fb86b;
+    --kw-oliwka-jasna: #2b3420;
+    --pico-primary-hover: #b6cc88;
+    --pico-primary-hover-background: #b6cc88;
+    --pico-primary-inverse: #11160a;
+  }
+}
+
+header.container nav { border-bottom: 1px solid var(--pico-muted-border-color); }
+.logo strong { color: var(--kw-oliwka); letter-spacing: 0.02em; }
+footer.container { margin-top: 2rem; color: var(--pico-muted-color); }
+
+.naglowek-strony { display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
+.waski { max-width: 34rem; margin-inline: auto; }
+.pusto { text-align: center; }
+.komunikat { padding: 0.75rem 1rem; border-left: 4px solid var(--kw-oliwka); background: var(--kw-oliwka-jasna); }
+.licznik { display: inline-block; min-width: 1.4em; padding: 0 0.35em; border-radius: 1em; text-align: center;
+           background: #c0392b; color: #fff; font-size: 0.8em; }
+.checkbox-w-siatce { align-self: end; padding-bottom: 0.9rem; }
+
+/* Statusy wniosku (S22IT1S0P2-32) */
+.status { display: inline-block; padding: 0.15em 0.6em; border-radius: 1em; font-size: 0.85em; white-space: nowrap;
+          background: #e5e7eb; color: #1f2937; }
+.status.duzy { font-size: 1rem; }
+.status-roboczy { background: #e5e7eb; color: #374151; }
+.status-zlozony { background: #dbeafe; color: #1e3a8a; }
+.status-w-akceptacji { background: #fef3c7; color: #78350f; }
+.status-zatwierdzony, .status-zorganizowany { background: #dcfce7; color: #14532d; }
+.status-w-trakcie { background: #ccfbf1; color: #134e4a; }
+.status-do-rozliczenia { background: #ede9fe; color: #4c1d95; }
+.status-rozliczony { background: #1f2937; color: #f9fafb; }
+.status-do-uzupelnienia { background: #ffedd5; color: #7c2d12; }
+.status-odrzucony { background: #fee2e2; color: #7f1d1d; }
+
+.bledy { padding: 0.75rem 1rem; border-left: 4px solid #ea580c; background: rgba(234, 88, 12, 0.08); }
+.bledy ul { margin-bottom: 0; }
+.blad { color: #b91c1c; }
+
+/* Historia obsługi – log agentów */
+.historia { list-style: none; padding-left: 0; }
+.historia li { position: relative; padding: 0.4rem 0 0.4rem 1.2rem; border-left: 2px solid var(--pico-muted-border-color); }
+.historia li::before { content: ""; position: absolute; left: -6px; top: 0.85rem; width: 10px; height: 10px;
+                       border-radius: 50%; background: var(--kw-oliwka); }
+.historia li.wynik-ostrzeżenie::before { background: #d97706; }
+.historia li.wynik-błąd::before { background: #b91c1c; }
+.historia small { color: var(--pico-muted-color); margin-left: 0.4rem; }
+.decyzja-agenta { margin-top: 0.2rem; font-size: 0.9em; }
+
+form.decyzja { margin-bottom: 0; }
+form.decyzja input { margin-bottom: 0.4rem; }
+
+.bez-lamania { white-space: nowrap; }
+form.decyzja .przyciski { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+form.decyzja button { width: auto; margin: 0; padding: 0.4rem 0.75rem; font-size: 0.9em; }
+td.kolumna-decyzji { min-width: 17rem; }

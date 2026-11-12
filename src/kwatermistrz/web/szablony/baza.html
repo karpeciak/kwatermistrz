@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="pl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block tytul %}Kwatermistrz{% endblock %} · Kwatermistrz</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2.0.6/css/pico.min.css">
+  <link rel="stylesheet" href="/statyczne/styl.css">
+  <script src="https://unpkg.com/htmx.org@2.0.4/dist/htmx.min.js"></script>
+</head>
+<body>
+  <header class="container">
+    <nav>
+      <ul>
+        <li><a href="/app/pulpit" class="logo"><strong>Kwatermistrz</strong></a></li>
+      </ul>
+      {% if uzytkownik %}
+      <ul>
+        <li><a href="/app/pulpit">Moje wnioski</a></li>
+        <li><a href="/app/wnioski/nowy">Nowy wniosek</a></li>
+        <li><a href="/app/do-zatwierdzenia">Do zatwierdzenia{% if do_zatwierdzenia %} <span class="licznik">{{ do_zatwierdzenia }}</span>{% endif %}</a></li>
+        <li>
+          <details class="dropdown">
+            <summary>{{ uzytkownik.stopien }} {{ uzytkownik.imie_nazwisko }}</summary>
+            <ul dir="rtl">
+              <li><a href="/app/wyloguj">Wyloguj</a></li>
+            </ul>
+          </details>
+        </li>
+      </ul>
+      {% endif %}
+    </nav>
+  </header>
+  <main class="container">
+    {% block tresc %}{% endblock %}
+  </main>
+  <footer class="container">
+    <small>Projekt S22IT1S0P2 · tryb demonstracyjny: logowanie bez hasła, dane fikcyjne ·
+      <a href="/docs">API</a></small>
+  </footer>
+</body>
+</html>
