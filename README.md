@@ -62,7 +62,7 @@ curl http://localhost:8000/delegacje/<ID>/przebieg
 ```bash
 docker compose up -d postgres rabbitmq api
 uv sync --extra dev
-uv run python -m kwatermistrz.agents.run zatwierdzenia
+uv run kwatermistrz-agenci zatwierdzenia
 ```
 
 ## Testy

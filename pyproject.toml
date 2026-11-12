@@ -13,6 +13,10 @@ dependencies = [
     "aio-pika>=9.5",
 ]
 
+[project.scripts]
+# Polecenie startowe bez argumentów z myślnikiem – Azure CLI nie przyjmuje `--args -m …`
+kwatermistrz-agenci = "kwatermistrz.agents.run:main"
+
 [project.optional-dependencies]
 dev = [
     "pytest>=8.3",

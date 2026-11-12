@@ -20,13 +20,32 @@ w logach. Gdy budżet pozwoli, wystarczy utworzyć osobne aplikacje z poleceniem
 > Koszty zmieniają się – przed startem sprawdź je w [kalkulatorze Azure](https://azure.microsoft.com/pricing/calculator/)
 > i ustaw alert budżetowy (krok 7).
 
-Wszystkie polecenia uruchamiasz w **Azure Cloud Shell** (portal Azure → ikona `>_` → Bash), bez instalowania niczego.
+## Ograniczenia Azure for Students (sprawdzone)
+
+- Zasoby można tworzyć tylko w regionach `francecentral`, `austriaeast`, `germanywestcentral`, `swedencentral`,
+  `belgiumcentral` (polityka „Allowed resource deployment regions”).
+- PostgreSQL Flexible Server B1ms jest zablokowany w `germanywestcentral` i niedostępny w `swedencentral`
+  (`SkuNotAvailable`), działa w **`francecentral`** – dlatego cały projekt stoi w France Central.
+- RabbitMQ: CloudAMQP, plan darmowy *Little Lemur*, Azure / West Europe (konto CloudAMQP, nie nasza subskrypcja).
+
+## Szybka ścieżka: skrypt
+
+Po utworzeniu grupy zasobów i środowiska (kroki 1–2) bazę i aplikacje tworzy lub aktualizuje skrypt. Pyta o adres
+RabbitMQ i token GitHub, generuje hasło do bazy i zapisuje wszystko wyłącznie w sekretach Azure. Można go uruchamiać
+wielokrotnie, np. po wygaśnięciu tokenu GitHub:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\infra\utworz-aplikacje.ps1
+```
+
+Poniżej te same kroki ręcznie. Polecenia uruchamiasz lokalnie (Azure CLI po `az login`) albo w **Azure Cloud Shell**
+(portal Azure → `>_` → Bash).
 
 ## 1. Zmienne
 
 ```bash
 RG=kwatermistrz-rg
-LOC=westeurope            # jeśli subskrypcja nie pozwala na region, wybierz inny z komunikatu błędu
+LOC=francecentral         # patrz „Ograniczenia Azure for Students”
 ENV=kw-env
 PG=kw-pg-$RANDOM          # nazwa serwera musi być unikalna w całym Azure
 PG_HASLO='<silne-haslo>'  # nie commituj go do repozytorium
@@ -42,7 +61,7 @@ az group create -n $RG -l $LOC
 az postgres flexible-server create -g $RG -n $PG -l $LOC \
   --tier Burstable --sku-name Standard_B1ms --storage-size 32 --version 16 \
   --admin-user kwadmin --admin-password "$PG_HASLO" --public-access 0.0.0.0
-az postgres flexible-server db create -g $RG -s $PG -d kwatermistrz
+az postgres flexible-server db create -g $RG -s $PG -n kwatermistrz
 
 az containerapp env create -g $RG -n $ENV -l $LOC
 ```
@@ -84,7 +103,7 @@ az containerapp create -g $RG -n kw-api --environment $ENV --image "$IMG" \
 az containerapp create -g $RG -n kw-agenci --environment $ENV --image "$IMG" \
   --registry-server ghcr.io --registry-username "$GH_LOGIN" --registry-password "$GH_TOKEN" \
   --min-replicas 1 --max-replicas 1 --cpu 0.25 --memory 0.5Gi \
-  --command "python" "-m" "kwatermistrz.agents.run" "all" \
+  --command "kwatermistrz-agenci" \
   --secrets db-url="$DB_URL" amqp-url="$AMQP_URL" \
   --env-vars DATABASE_URL=secretref:db-url AMQP_URL=secretref:amqp-url
 
