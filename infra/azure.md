@@ -1,145 +1,107 @@
-# Wdrożenie w Azure (Azure for Students)
+# Azure – środowisko online
 
-## Docelowy układ
+Ten dokument jest dla **administratora** (Product Ownera). Deweloperzy nie potrzebują dostępu do Azure –
+ich zmiany trafiają tu automatycznie po scaleniu pull requesta do `main`.
+
+## Stan obecny
+
+| Zasób | Nazwa | Region | Uwagi |
+|---|---|---|---|
+| Grupa zasobów | `kwatermistrz-rg` | Germany West Central (metadane) | wszystko poniżej należy do tej grupy |
+| Środowisko Container Apps | `kw-env` | France Central | typ Express |
+| API | `kw-api` | France Central | publiczny adres, skaluje się do zera (pierwsze wywołanie po przerwie trwa kilka–kilkanaście sekund) |
+| Agenci | `kw-agenci` | France Central | wszyscy agenci w jednym kontenerze, 1 replika |
+| PostgreSQL Flexible Server | `kw-pg-81826`, baza `kwatermistrz` | France Central | Burstable B1ms |
+| RabbitMQ | CloudAMQP, plan *Little Lemur* | Azure West Europe | konto CloudAMQP, poza naszą subskrypcją |
+| Obrazy | `ghcr.io/karpeciak/kwatermistrz:<sha>` | GitHub | budowane przez CI |
+| Budżet | `kwatermistrz-budzet` | subskrypcja | 80 USD/mies., maile przy 50%, 80% i prognozie 100% |
+| Tożsamość wdrożeń | `kwatermistrz-github` | Entra ID | rola Contributor tylko w `kwatermistrz-rg` |
+
+**Adres aplikacji:** https://kw-api.livelyflower-540bc67c.francecentral.azurecontainerapps.io
+(dokumentacja interaktywna: `/docs`).
 
 ```
-GitHub Actions ──obraz──▶ GitHub Container Registry (ghcr.io, bezpłatny)
-                                   │
-Azure Container Apps (środowisko kw-env)
-├── kw-api      FastAPI, publiczny adres HTTPS, skaluje się do zera
-└── kw-agenci   wszyscy agenci w jednym kontenerze (`run all`), 1 replika – stale nasłuchuje kolejek
-Azure Database for PostgreSQL – Flexible Server (Burstable B1ms)
-RabbitMQ – CloudAMQP (plan darmowy) albo kontener w środowisku z VNet (patrz krok 3)
+merge do main ─▶ GitHub Actions: test ─▶ build (obraz do ghcr.io) ─▶ deploy (OIDC, bez haseł)
+                                                                        │
+                                       az containerapp update kw-api, kw-agenci --image …:<sha>
 ```
 
 **Dlaczego agenci w jednym kontenerze:** agent musi stale nasłuchiwać kolejki, więc nie może skalować się do zera.
-Osiem stale działających kontenerów szybko wyczerpałoby środki Azure for Students. Jeden kontener z `run all`
-kosztuje tyle co jeden. Logicznie agenci pozostają osobni: własne kolejki, własna obsługa błędów, własne wpisy
-w logach. Gdy budżet pozwoli, wystarczy utworzyć osobne aplikacje z poleceniem `run <nazwa>`.
-
-> Koszty zmieniają się – przed startem sprawdź je w [kalkulatorze Azure](https://azure.microsoft.com/pricing/calculator/)
-> i ustaw alert budżetowy (krok 7).
+Osiem stale działających kontenerów szybko wyczerpałoby środki Azure for Students. Logicznie agenci pozostają
+osobni: własne kolejki, obsługa błędów i wpisy w logach. Osobną aplikację dla agenta tworzy się poleceniem
+`kwatermistrz-agenci <nazwa>`.
 
 ## Ograniczenia Azure for Students (sprawdzone)
 
-- Zasoby można tworzyć tylko w regionach `francecentral`, `austriaeast`, `germanywestcentral`, `swedencentral`,
+- Zasoby można tworzyć tylko w `francecentral`, `austriaeast`, `germanywestcentral`, `swedencentral`,
   `belgiumcentral` (polityka „Allowed resource deployment regions”).
-- PostgreSQL Flexible Server B1ms jest zablokowany w `germanywestcentral` i niedostępny w `swedencentral`
-  (`SkuNotAvailable`), działa w **`francecentral`** – dlatego cały projekt stoi w France Central.
-- RabbitMQ: CloudAMQP, plan darmowy *Little Lemur*, Azure / West Europe (konto CloudAMQP, nie nasza subskrypcja).
+- PostgreSQL B1ms: zablokowany w `germanywestcentral`, `SkuNotAvailable` w `swedencentral` – działa w `francecentral`.
+- Środowisko Container Apps typu **Express** nie obsługuje `--revision-suffix`; nową rewizję wymusza zmiana
+  zmiennej środowiskowej (skrypt używa `WDROZENIE`).
+- `az containerapp --args` nie przyjmuje wartości zaczynających się od `-` – dlatego agenci startują poleceniem
+  `kwatermistrz-agenci`, a nie `python -m …`.
+- GitHub może przedstawiać repozytorium w logowaniu OIDC z numerami kont
+  (`repo:karpeciak@<id>/kwatermistrz@<id>:…`) – zaufanie w Azure musi mieć oba warianty (robi to skrypt).
 
-## Szybka ścieżka: skrypt
+## Typowe zadania
 
-Po utworzeniu grupy zasobów i środowiska (kroki 1–2) bazę i aplikacje tworzy lub aktualizuje skrypt. Pyta o adres
-RabbitMQ i token GitHub, generuje hasło do bazy i zapisuje wszystko wyłącznie w sekretach Azure. Można go uruchamiać
-wielokrotnie, np. po wygaśnięciu tokenu GitHub:
+Polecenia dla PowerShell po `az login`. Jeśli `az` nie jest widoczne, użyj pełnej ścieżki
+`& "C:\Program Files\Microsoft SDKs\Azure\CLI2\wbin\az.cmd"`.
+
+**Logi aplikacji** (np. gdy po wdrożeniu coś nie działa):
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\infra\utworz-aplikacje.ps1
+az containerapp logs show -g kwatermistrz-rg -n kw-api --tail 50
+az containerapp logs show -g kwatermistrz-rg -n kw-agenci --tail 50
 ```
 
-Poniżej te same kroki ręcznie. Polecenia uruchamiasz lokalnie (Azure CLI po `az login`) albo w **Azure Cloud Shell**
-(portal Azure → `>_` → Bash).
+**Która wersja działa:**
 
-## 1. Zmienne
-
-```bash
-RG=kwatermistrz-rg
-LOC=francecentral         # patrz „Ograniczenia Azure for Students”
-ENV=kw-env
-PG=kw-pg-$RANDOM          # nazwa serwera musi być unikalna w całym Azure
-PG_HASLO='<silne-haslo>'  # nie commituj go do repozytorium
-GH_LOGIN='<login-github>'
-IMG="ghcr.io/<wlasciciel>/<repo>:latest"   # małymi literami
+```powershell
+az containerapp list -g kwatermistrz-rg --query "[].{nazwa:name, stan:properties.runningStatus, obraz:properties.template.containers[0].image}" -o table
 ```
 
-## 2. Grupa zasobów, baza, środowisko
+**Ręczne wdrożenie konkretnej wersji** (np. powrót do poprzedniej) – tag to pierwsze 7 znaków commita z `main`:
 
-```bash
-az group create -n $RG -l $LOC
-
-az postgres flexible-server create -g $RG -n $PG -l $LOC \
-  --tier Burstable --sku-name Standard_B1ms --storage-size 32 --version 16 \
-  --admin-user kwadmin --admin-password "$PG_HASLO" --public-access 0.0.0.0
-az postgres flexible-server db create -g $RG -s $PG -n kwatermistrz
-
-az containerapp env create -g $RG -n $ENV -l $LOC
+```powershell
+az containerapp update -g kwatermistrz-rg -n kw-api --image ghcr.io/karpeciak/kwatermistrz:<sha>
+az containerapp update -g kwatermistrz-rg -n kw-agenci --image ghcr.io/karpeciak/kwatermistrz:<sha>
 ```
 
-`--public-access 0.0.0.0` dopuszcza połączenia z usług Azure (w tym Container Apps).
+**Odnowienie tokenu GitHub** (Azure przestaje pobierać obrazy po jego wygaśnięciu) albo zmiana adresu RabbitMQ:
+wygeneruj nowy token (`read:packages`) i uruchom `infra/utworz-aplikacje.ps1` – zaktualizuje sekrety obu aplikacji.
 
-## 3. RabbitMQ
+**Wstrzymanie kosztów** (np. przerwa semestralna) i wznowienie:
 
-**Wariant prosty (polecany na start):** załóż bezpłatną instancję na [cloudamqp.com](https://www.cloudamqp.com/)
-i skopiuj adres `amqps://…`.
-
-**Wariant w całości w Azure:** RabbitMQ jako kontener z wejściem TCP. Container Apps obsługuje wejście TCP tylko
-w środowisku z własną siecią VNet, więc środowisko z kroku 2 trzeba utworzyć z parametrem
-`--infrastructure-subnet-resource-id`. To więcej konfiguracji i stały koszt kolejnego kontenera.
-
-```bash
-AMQP_URL='amqps://<uzytkownik>:<haslo>@<host>/<vhost>'
-DB_URL="postgresql+psycopg://kwadmin:${PG_HASLO}@${PG}.postgres.database.azure.com:5432/kwatermistrz?sslmode=require"
+```powershell
+az containerapp update -g kwatermistrz-rg -n kw-agenci --min-replicas 0
+az postgres flexible-server stop -g kwatermistrz-rg -n kw-pg-81826
+# wznowienie
+az postgres flexible-server start -g kwatermistrz-rg -n kw-pg-81826
+az containerapp update -g kwatermistrz-rg -n kw-agenci --min-replicas 1
 ```
 
-## 4. Dostęp do obrazów w ghcr.io
+Zatrzymany serwer PostgreSQL Azure uruchamia automatycznie po 7 dniach.
 
-Pierwszy push na `main` buduje obraz `ghcr.io/<wlasciciel>/<repo>:latest`. Pakiet jest domyślnie prywatny – utwórz
-token GitHub (Settings → Developer settings → Personal access tokens → *classic*, uprawnienie `read:packages`):
+## Odtworzenie środowiska od zera
 
-```bash
-GH_TOKEN='<token-read-packages>'
-```
-
-## 5. Aplikacje
-
-```bash
-az containerapp create -g $RG -n kw-api --environment $ENV --image "$IMG" \
-  --registry-server ghcr.io --registry-username "$GH_LOGIN" --registry-password "$GH_TOKEN" \
-  --target-port 8000 --ingress external --min-replicas 0 --max-replicas 2 --cpu 0.25 --memory 0.5Gi \
-  --secrets db-url="$DB_URL" amqp-url="$AMQP_URL" \
-  --env-vars DATABASE_URL=secretref:db-url AMQP_URL=secretref:amqp-url
-
-az containerapp create -g $RG -n kw-agenci --environment $ENV --image "$IMG" \
-  --registry-server ghcr.io --registry-username "$GH_LOGIN" --registry-password "$GH_TOKEN" \
-  --min-replicas 1 --max-replicas 1 --cpu 0.25 --memory 0.5Gi \
-  --command "kwatermistrz-agenci" --args "all" \
-  --secrets db-url="$DB_URL" amqp-url="$AMQP_URL" \
-  --env-vars DATABASE_URL=secretref:db-url AMQP_URL=secretref:amqp-url
-
-az containerapp show -g $RG -n kw-api --query properties.configuration.ingress.fqdn -o tsv
-```
-
-Ostatnie polecenie wypisze adres API – dokumentacja pod `https://<adres>/docs`.
-
-## 6. Automatyczne wdrażanie z GitHub Actions
-
-Job `deploy` w `.github/workflows/ci.yml` loguje się do Azure bez haseł (OIDC):
-
-```bash
-APP_ID=$(az ad app create --display-name kwatermistrz-github --query appId -o tsv)
-az ad sp create --id $APP_ID
-az role assignment create --assignee $APP_ID --role Contributor \
-  --scope $(az group show -n $RG --query id -o tsv)
-az ad app federated-credential create --id $APP_ID --parameters '{
-  "name": "github-production",
-  "issuer": "https://token.actions.githubusercontent.com",
-  "subject": "repo:<wlasciciel>/<repo>:environment:production",
-  "audiences": ["api://AzureADTokenExchange"]
-}'
-echo "AZURE_CLIENT_ID=$APP_ID"
-echo "AZURE_TENANT_ID=$(az account show --query tenantId -o tsv)"
-echo "AZURE_SUBSCRIPTION_ID=$(az account show --query id -o tsv)"
-```
-
-W repozytorium: Settings → Secrets and variables → Actions → **Variables**: `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`,
-`AZURE_SUBSCRIPTION_ID`, `AZURE_RESOURCE_GROUP` (= `kwatermistrz-rg`).
-
-**Jeśli `az ad app create` zwróci brak uprawnień** (konta uczelniane często nie mogą rejestrować aplikacji),
-pipeline nadal testuje i buduje obrazy, a wdrożenie robisz ręcznie: `./infra/deploy.sh ghcr.io/<wlasciciel>/<repo>:<sha>`.
-
-## 7. Kontrola kosztów
-
-Portal Azure → **Cost Management → Budgets → Add**: budżet np. 80 USD z alertami przy 50% i 80%.
-Po zajęciach możesz zatrzymać koszty: `az containerapp update -g $RG -n kw-agenci --min-replicas 0`
-oraz `az postgres flexible-server stop -g $RG -n $PG`.
+1. RabbitMQ: konto na [cloudamqp.com](https://www.cloudamqp.com/) → instancja *Little Lemur* (Azure, West Europe)
+   → skopiuj **AMQP URL**.
+2. Token GitHub (classic) z uprawnieniem `read:packages`.
+3. Grupa i środowisko:
+   ```powershell
+   az provider register -n Microsoft.App --wait
+   az provider register -n Microsoft.OperationalInsights --wait
+   az provider register -n Microsoft.DBforPostgreSQL --wait
+   az group create -n kwatermistrz-rg -l francecentral
+   az containerapp env create -g kwatermistrz-rg -n kw-env -l francecentral
+   ```
+4. Baza i aplikacje – skrypt pyta o AMQP URL i token, generuje hasło do bazy i zapisuje je tylko w sekretach Azure:
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File .\infra\utworz-aplikacje.ps1
+   ```
+5. Automatyczne wdrażanie (tożsamość, rola, zaufanie OIDC, zmienne w repozytorium):
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File .\infra\wdrazanie-github.ps1
+   ```
+6. Budżet: portal Azure → **Cost Management → Budgets → Add**, alerty przy 50% i 80%.

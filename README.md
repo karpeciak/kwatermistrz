@@ -3,6 +3,35 @@
 Wieloagentowy system obsługi wyjazdów służbowych w wojsku – od wniosku do rozliczenia.
 Projekt S22IT1S0P2 (WAT).
 
+## Aplikacja online
+
+**https://kw-api.livelyflower-540bc67c.francecentral.azurecontainerapps.io/docs**
+
+Strona `/docs` to interaktywna dokumentacja API: przy każdej operacji jest przycisk **Try it out** → **Execute**.
+Wersja online zawsze odpowiada gałęzi `main` – aktualizuje się automatycznie po scaleniu pull requesta.
+Po dłuższej przerwie pierwsze wywołanie trwa kilka–kilkanaście sekund (API usypia się, gdy nikt go nie używa).
+
+Dane przykładowe: jednostka `JW-1001`, żołnierze `ZOL-001` (dowódca), `ZOL-002` (zastępca dowódcy), `ZOL-003`,
+`ZOL-004` (przełożony: `ZOL-001`), przedsięwzięcie `PRZ-01` (szkolenie w Toruniu).
+
+Przepływ do wypróbowania:
+
+1. `POST /wnioski` z treścią:
+   ```json
+   {"id_zolnierza": "ZOL-003", "id_przedsiewziecia": "PRZ-01", "cel_wyjazdu": "Szkolenie z logistyki",
+    "miejsce_docelowe": "Toruń", "data_wyjazdu": "2026-12-07", "data_powrotu": "2026-12-11",
+    "srodek_transportu": "pociąg"}
+   ```
+   Zapamiętaj `id_delegacji` z odpowiedzi.
+2. `GET /delegacje/{id_delegacji}` – po chwili status `Oczekuje na akceptację` (agenci zwalidowali wniosek
+   i przekazali go przełożonemu).
+3. `POST /delegacje/{id_delegacji}/decyzja` z treścią `{"id_osoby": "ZOL-001", "decyzja": "Zgoda"}` → status
+   `Zatwierdzona`.
+4. `GET /delegacje/{id_delegacji}/przebieg` – log operacji i decyzji każdego agenta.
+
+Wniosek z błędem (np. pusty `cel_wyjazdu` albo data powrotu przed datą wyjazdu) dostaje status `Do poprawy`,
+a uzasadnienie widać w przebiegu.
+
 ## Architektura
 
 ```
@@ -33,11 +62,20 @@ probabilistyczna), liczba wariantów, wybór, uzasadnienie, pewność i wersja m
 o pewności < 0,75 lub decyzja finansowa ponad limit ma `wymaga_zatwierdzenia = true`.
 `log_decyzji` wskazuje tylko na `log_operacji` – w modelu nie ma cyklu z encją log.
 
-Przebieg jednej delegacji: `GET /delegacje/{id}/przebieg`.
+## Praca w zespole
+
+Nowa osoba w zespole: [CONTRIBUTING.md](CONTRIBUTING.md) – instalacja, pierwsze uruchomienie testów,
+gałęzie i pull requesty.
 
 ## Uruchomienie lokalne
 
-Wymagania: Docker Desktop (z integracją WSL2), opcjonalnie [uv](https://docs.astral.sh/uv/).
+**Testy** – bez Dockera (SQLite i atrapa brokera), wystarczy Python:
+
+```bash
+pytest
+```
+
+**Cały system** (API, agenci, PostgreSQL, RabbitMQ) – wymaga Docker Desktop:
 
 ```bash
 docker compose up --build
@@ -46,40 +84,14 @@ docker compose up --build
 - API i dokumentacja: http://localhost:8000/docs
 - Panel RabbitMQ: http://localhost:15672 (guest / guest)
 
-Przykładowy przepływ:
-
-```bash
-curl -X POST http://localhost:8000/wnioski -H "Content-Type: application/json" -H "Idempotency-Key: demo-1" \
-  -d '{"id_zolnierza":"ZOL-003","id_przedsiewziecia":"PRZ-01","cel_wyjazdu":"Szkolenie z logistyki",
-       "miejsce_docelowe":"Toruń","data_wyjazdu":"2026-12-07","data_powrotu":"2026-12-11","srodek_transportu":"pociąg"}'
-curl -X POST http://localhost:8000/delegacje/<ID>/decyzja -H "Content-Type: application/json" \
-  -d '{"id_osoby":"ZOL-001","decyzja":"Zgoda"}'
-curl http://localhost:8000/delegacje/<ID>/przebieg
-```
-
-### Praca nad jednym agentem
+Praca nad jednym agentem przy działających usługach:
 
 ```bash
 docker compose up -d postgres rabbitmq api
-uv sync --extra dev
-uv run kwatermistrz-agenci zatwierdzenia
+kwatermistrz-agenci zatwierdzenia
 ```
-
-## Testy
-
-```bash
-uv run ruff check .
-uv run pytest
-```
-
-Testy działają na SQLite i atrapie brokera – nie wymagają Dockera.
-
-## Praca w zespole
-
-Każdy deweloper pracuje na własnej gałęzi (`feature/S22IT1S0P2-<nr>-<opis>`) i zgłasza zmiany pull requestem
-do `main`. Instrukcja krok po kroku: [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Wdrożenie
 
-Push na `main` → GitHub Actions: testy → obraz Docker w GitHub Container Registry → aktualizacja
-Azure Container Apps. Konfiguracja Azure: [infra/azure.md](infra/azure.md).
+Scalenie do `main` → GitHub Actions: testy → obraz Docker w GitHub Container Registry → automatyczna
+aktualizacja Azure Container Apps. Administracja środowiskiem Azure: [infra/azure.md](infra/azure.md).
