@@ -4,11 +4,12 @@ import asyncio
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import func, select
 
 from kwatermistrz.agents import AGENCI
 from kwatermistrz.api.main import app, get_broker
 from kwatermistrz.db import sesja
-from kwatermistrz.models import Delegacja, Status
+from kwatermistrz.models import Delegacja, DokumentKosztowy, Status
 from kwatermistrz.web.strony import CIASTECZKO
 
 
@@ -82,6 +83,50 @@ def test_cudzy_wniosek_jest_niedostepny(klient):
         s.add(Delegacja(id_delegacji="DEL-UI-2", id_zolnierza="ZOL-004", dane_wniosku={}))
     zaloguj(klient, "ZOL-003")
     assert klient.get("/app/wnioski/DEL-UI-2").status_code == 404
+
+
+def test_delegowany_dodaje_dokument_na_stronie_rozliczenia(klient):
+    with sesja() as s:
+        s.add(
+            Delegacja(
+                id_delegacji="DEL-UI-R",
+                id_zolnierza="ZOL-003",
+                dane_wniosku={},
+                status=Status.DO_ROZLICZENIA,
+            )
+        )
+    zaloguj(klient, "ZOL-003")
+
+    strona_wniosku = klient.get("/app/wnioski/DEL-UI-R")
+    assert "/app/wnioski/DEL-UI-R/rozliczenie" in strona_wniosku.text
+    assert klient.get("/app/wnioski/DEL-UI-R/rozliczenie").status_code == 200
+
+    odpowiedz = klient.post(
+        "/app/wnioski/DEL-UI-R/rozliczenie/dokumenty",
+        data={"rodzaj": "bilet", "numer": "IC 987", "data": "2026-11-12", "kwota": "89.00"},
+    )
+
+    assert odpowiedz.status_code == 303
+    assert odpowiedz.headers["location"] == "/app/wnioski/DEL-UI-R/rozliczenie?wynik=dokument-przyjety"
+
+    strona_po_przekierowaniu = klient.get(odpowiedz.headers["location"])
+    assert strona_po_przekierowaniu.status_code == 200
+    assert "Dokument kosztowy został przyjęty" in strona_po_przekierowaniu.text
+
+    odswiezona_strona = klient.get(odpowiedz.headers["location"])
+    assert odswiezona_strona.status_code == 200
+    assert "Dokument kosztowy został przyjęty" in odswiezona_strona.text
+    with sesja() as s:
+        assert s.scalar(select(func.count()).select_from(DokumentKosztowy)) == 1
+
+    duplikat = klient.post(
+        "/app/wnioski/DEL-UI-R/rozliczenie/dokumenty",
+        data={"rodzaj": " BILET ", "numer": "ic   987", "data": "2026-11-12", "kwota": "89.0"},
+    )
+    assert duplikat.status_code == 200
+    assert "jest już zarejestrowany" in duplikat.text
+    with sesja() as s:
+        assert s.scalar(select(DokumentKosztowy)).numer == "IC 987"
 
 
 def test_wniosek_z_bledami_pokazuje_co_uzupelnic(klient, broker):

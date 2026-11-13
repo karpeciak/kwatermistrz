@@ -16,6 +16,9 @@
         <p>{% if zatwierdzajacy and d.status == "w akceptacji" %}{{ zatwierdzajacy.stopien }} {{ zatwierdzajacy.imie_nazwisko }}, {{ zatwierdzajacy.funkcja }}{% else %}–{% endif %}</p>
       </div>
     </div>
+    {% if d.status == "do rozliczenia" and uzytkownik.id_zolnierza == d.id_zolnierza %}
+    <p><a href="/app/wnioski/{{ d.id_delegacji }}/rozliczenie" role="button">Przejdź do rozliczenia</a></p>
+    {% endif %}
     {% if d.przekazano_zastepcy %}
     <p class="komunikat">Przełożony nie podjął decyzji w terminie – wniosek przekazano osobie zastępującej.</p>
     {% elif d.liczba_przypomnien %}
