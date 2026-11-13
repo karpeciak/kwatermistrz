@@ -67,3 +67,33 @@ form.decyzja input { margin-bottom: 0.4rem; }
 form.decyzja .przyciski { display: flex; flex-wrap: wrap; gap: 0.4rem; }
 form.decyzja button { width: auto; margin: 0; padding: 0.4rem 0.75rem; font-size: 0.9em; }
 td.kolumna-decyzji { min-width: 17rem; }
+
+/* Ścieżka etapów wniosku (S22IT1S0P2-32) */
+.etapy { display: flex; list-style: none; padding: 0; margin: 0 0 1.5rem; counter-reset: etap; }
+.etapy li { flex: 1 1 0; position: relative; list-style: none; margin: 0; padding: 1.9rem 0.25rem 0;
+  text-align: center; font-size: 0.8em; line-height: 1.3; color: var(--pico-muted-color); }
+.etapy li::before { counter-increment: etap; content: counter(etap); position: absolute; z-index: 1; top: 0;
+  left: 50%; transform: translateX(-50%); width: 1.5rem; height: 1.5rem; line-height: 1.5rem; border-radius: 50%;
+  background: var(--pico-muted-border-color); color: var(--pico-color); font-size: 0.8rem; font-weight: 600;
+  text-align: center; box-sizing: border-box; }
+.etapy li::after { content: ""; position: absolute; top: 0.7rem; left: 50%; width: 100%; height: 2px;
+  background: var(--pico-muted-border-color); }
+.etapy li:last-child::after { display: none; }
+.etapy li.zrobiony::before { content: "✓"; background: var(--kw-oliwka); color: var(--pico-primary-inverse); }
+.etapy li.zrobiony::after { background: var(--kw-oliwka); }
+.etapy li.biezacy { color: var(--pico-color); font-weight: 600; }
+.etapy li.biezacy::before { background: var(--kw-oliwka); color: var(--pico-primary-inverse);
+  box-shadow: 0 0 0 4px var(--kw-oliwka-jasna); }
+.etapy li.boczny::before { content: "!"; background: #c2410c; color: #fff; box-shadow: 0 0 0 4px rgba(194, 65, 12, 0.2); }
+.etapy li small { display: block; font-weight: 400; color: #c2410c; }
+
+@media (max-width: 576px) {
+  .etapy { flex-direction: column; gap: 0.6rem; }
+  .etapy li { flex: none; min-height: 1.5rem; padding: 0.15rem 0 0 2.2rem; text-align: left; font-size: 0.9em; }
+  .etapy li::before { left: 0; transform: none; }
+  .etapy li::after { top: 1.5rem; left: 0.7rem; width: 2px; height: 0.75rem; }
+}
+
+.komunikat.ostrzezenie { border-left-color: #d97706; background: rgba(217, 119, 6, 0.1); }
+.niewidoczny { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden;
+  clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
