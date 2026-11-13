@@ -1,0 +1,61 @@
+{% extends "baza.html" %}
+{% block tytul %}Rozliczenie {{ d.id_delegacji }}{% endblock %}
+{% block tresc %}
+<p><a href="/app/wnioski/{{ d.id_delegacji }}">← Wniosek {{ d.id_delegacji }}</a></p>
+
+<div class="naglowek-strony">
+  <h2>Rozliczenie delegacji</h2>
+  <span class="status duzy {{ d.status | klasa_statusu }}">{{ d.status }}</span>
+</div>
+
+{% if komunikat %}
+<p class="{{ 'bledy' if blad else 'komunikat' }}" role="{{ 'alert' if blad else 'status' }}">{{ komunikat }}</p>
+{% endif %}
+
+<article>
+  <header><strong>Dodaj dokument kosztowy</strong></header>
+  <p><small>Wszystkie pola są wymagane.</small></p>
+  <form method="post" action="/app/wnioski/{{ d.id_delegacji }}/rozliczenie/dokumenty">
+    <div class="grid">
+      <label for="rodzaj">Rodzaj dokumentu
+        <input id="rodzaj" name="rodzaj" type="text" maxlength="30" required placeholder="np. bilet">
+      </label>
+      <label for="numer">Numer dokumentu
+        <input id="numer" name="numer" type="text" maxlength="60" required>
+      </label>
+    </div>
+    <div class="grid">
+      <label for="data">Data dokumentu
+        <input id="data" name="data" type="date" required>
+      </label>
+      <label for="kwota">Kwota (zł)
+        <input id="kwota" name="kwota" type="number" min="0.01" step="0.01" inputmode="decimal" required>
+      </label>
+    </div>
+    <button type="submit">Dodaj dokument</button>
+  </form>
+</article>
+
+<article>
+  <header><strong>Dokumenty w bieżącym rozliczeniu</strong></header>
+  {% if dokumenty %}
+  <div class="overflow-auto">
+    <table>
+      <thead><tr><th scope="col">Rodzaj</th><th scope="col">Numer</th><th scope="col">Data</th><th scope="col">Kwota</th></tr></thead>
+      <tbody>
+      {% for dokument in dokumenty %}
+        <tr>
+          <td>{{ dokument.rodzaj }}</td>
+          <td>{{ dokument.numer }}</td>
+          <td>{{ dokument.data | data_pl }}</td>
+          <td class="bez-lamania">{{ "%.2f" | format(dokument.kwota) }} zł</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p>Nie dodano jeszcze żadnych dokumentów kosztowych.</p>
+  {% endif %}
+</article>
+{% endblock %}

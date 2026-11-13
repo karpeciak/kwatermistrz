@@ -18,15 +18,27 @@ from zoneinfo import ZoneInfo
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
+from pydantic import ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from ..api.rozliczenia import DokumentKosztowyIn, przyjmij_dokument
 from ..api.schemas import WniosekIn
 from ..api.wnioski import zarejestruj_wniosek
 from ..api.zaleznosci import get_broker, get_sesja
 from ..db import teraz
 from ..messaging import Broker, Komunikat, Typ
-from ..models import Agent, Delegacja, LogDecyzji, LogOperacji, Przedsiewziecie, Status, Zolnierz
+from ..models import (
+    Agent,
+    Delegacja,
+    DokumentKosztowy,
+    LogDecyzji,
+    LogOperacji,
+    Przedsiewziecie,
+    Rozliczenie,
+    Status,
+    Zolnierz,
+)
 
 KATALOG = Path(__file__).parent
 CIASTECZKO = "kwatermistrz_uzytkownik"
@@ -238,6 +250,72 @@ def stan_wniosku(
 ):
     """Fragment strony odświeżany przez HTMX, dopóki agenci pracują nad wnioskiem."""
     return szablony.TemplateResponse(request, "_stan_wniosku.html", dane_wniosku(s, id_delegacji, uzytkownik))
+
+
+# ---------------------------------------------------------------- rozliczenie
+
+
+def dane_rozliczenia(s: Session, id_delegacji: str, uzytkownik: Zolnierz) -> dict:
+    d = s.get(Delegacja, id_delegacji)
+    if d is None or d.id_zolnierza != uzytkownik.id_zolnierza:
+        raise HTTPException(404, "Nie znaleziono delegacji")
+    if d.status != Status.DO_ROZLICZENIA:
+        raise HTTPException(409, "Delegacja nie kwalifikuje się do rozliczenia")
+    rozliczenie = s.scalar(select(Rozliczenie).where(Rozliczenie.id_delegacji == id_delegacji))
+    dokumenty = []
+    if rozliczenie is not None:
+        dokumenty = s.scalars(
+            select(DokumentKosztowy)
+            .where(DokumentKosztowy.id_rozliczenia == rozliczenie.id_rozliczenia)
+            .order_by(DokumentKosztowy.id_dokumentu)
+        ).all()
+    return {"d": d, "rozliczenie": rozliczenie, "dokumenty": dokumenty}
+
+
+@router.get("/wnioski/{id_delegacji}/rozliczenie", response_class=HTMLResponse)
+def rozliczenie(
+    id_delegacji: str,
+    request: Request,
+    s: Session = Depends(get_sesja),
+    uzytkownik: Zolnierz = Depends(biezacy_uzytkownik),
+):
+    return strona(request, s, "rozliczenie.html", uzytkownik, **dane_rozliczenia(s, id_delegacji, uzytkownik))
+
+
+@router.post("/wnioski/{id_delegacji}/rozliczenie/dokumenty", response_class=HTMLResponse)
+def dodaj_dokument_w_interfejsie(
+    id_delegacji: str,
+    request: Request,
+    rodzaj: str = Form(...),
+    numer: str = Form(...),
+    data: str = Form(...),
+    kwota: str = Form(...),
+    s: Session = Depends(get_sesja),
+    uzytkownik: Zolnierz = Depends(biezacy_uzytkownik),
+):
+    kontekst = dane_rozliczenia(s, id_delegacji, uzytkownik)
+    try:
+        dane = DokumentKosztowyIn(rodzaj=rodzaj, numer=numer, data=data, kwota=kwota)
+    except ValidationError:
+        return strona(
+            request,
+            s,
+            "rozliczenie.html",
+            uzytkownik,
+            **kontekst,
+            komunikat="Sprawdź rodzaj, numer, datę i dodatnią kwotę dokumentu.",
+            blad=True,
+        )
+    wynik = przyjmij_dokument(s, kontekst["d"], dane)
+    return strona(
+        request,
+        s,
+        "rozliczenie.html",
+        uzytkownik,
+        **dane_rozliczenia(s, id_delegacji, uzytkownik),
+        komunikat=wynik.komunikat,
+        blad=not wynik.przyjeto,
+    )
 
 
 # ---------------------------------------------------------------- przełożony
