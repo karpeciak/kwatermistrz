@@ -45,8 +45,18 @@ def test_nowy_dokument_zostaje_przypisany_do_biezacego_rozliczenia(klient):
     with sesja() as s:
         rozliczenie = s.scalar(select(Rozliczenie).where(Rozliczenie.id_delegacji == "DEL-R-1"))
         zapisany = s.scalar(select(DokumentKosztowy))
+        wpis = s.scalar(
+            select(LogOperacji).where(
+                LogOperacji.id_delegacji == "DEL-R-1",
+                LogOperacji.operacja == "Dodanie dokumentu kosztowego",
+            )
+        )
         assert zapisany.id_rozliczenia == rozliczenie.id_rozliczenia
         assert zapisany.kwota == Decimal("123.40")
+        assert wpis is not None
+        assert wpis.id_agenta == "AG-06"
+        assert wpis.id_korelacji == "COR-DEL-R-1"
+        assert wpis.wynik == "Sukces"
 
 
 def test_ten_sam_dokument_jest_odrzucony_w_innym_rozliczeniu_i_odrzucenie_jest_logowane(klient):
@@ -69,6 +79,7 @@ def test_ten_sam_dokument_jest_odrzucony_w_innym_rozliczeniu_i_odrzucenie_jest_l
         )
         assert wpis is not None
         assert wpis.id_agenta == "AG-06"
+        assert wpis.id_korelacji == "COR-DEL-R-3"
         assert wpis.wynik == "Ostrzeżenie"
         assert "duplikat" in wpis.komunikat.lower()
 

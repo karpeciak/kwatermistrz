@@ -22,7 +22,7 @@ from pydantic import ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from ..api.rozliczenia import DokumentKosztowyIn, przyjmij_dokument
+from ..api.rozliczenia import KOMUNIKAT_PRZYJETY, DokumentKosztowyIn, przyjmij_dokument
 from ..api.schemas import WniosekIn
 from ..api.wnioski import zarejestruj_wniosek
 from ..api.zaleznosci import get_broker, get_sesja
@@ -46,6 +46,7 @@ STREFA = ZoneInfo("Europe/Warsaw")
 
 # Etapy, na których pracują agenci – strona wniosku odświeża się wtedy sama
 ETAPY_W_TOKU = {Status.ZLOZONY, Status.ZATWIERDZONY}
+WYNIK_DOKUMENT_PRZYJETY = "dokument-przyjety"
 
 szablony = Jinja2Templates(directory=KATALOG / "szablony")
 router = APIRouter(prefix="/app", include_in_schema=False)
@@ -276,10 +277,19 @@ def dane_rozliczenia(s: Session, id_delegacji: str, uzytkownik: Zolnierz) -> dic
 def rozliczenie(
     id_delegacji: str,
     request: Request,
+    wynik: str | None = None,
     s: Session = Depends(get_sesja),
     uzytkownik: Zolnierz = Depends(biezacy_uzytkownik),
 ):
-    return strona(request, s, "rozliczenie.html", uzytkownik, **dane_rozliczenia(s, id_delegacji, uzytkownik))
+    komunikat = KOMUNIKAT_PRZYJETY if wynik == WYNIK_DOKUMENT_PRZYJETY else None
+    return strona(
+        request,
+        s,
+        "rozliczenie.html",
+        uzytkownik,
+        **dane_rozliczenia(s, id_delegacji, uzytkownik),
+        komunikat=komunikat,
+    )
 
 
 @router.post("/wnioski/{id_delegacji}/rozliczenie/dokumenty", response_class=HTMLResponse)
@@ -307,6 +317,10 @@ def dodaj_dokument_w_interfejsie(
             blad=True,
         )
     wynik = przyjmij_dokument(s, kontekst["d"], dane)
+    if wynik.przyjeto:
+        return RedirectResponse(
+            f"/app/wnioski/{id_delegacji}/rozliczenie?wynik={WYNIK_DOKUMENT_PRZYJETY}", status_code=303
+        )
     return strona(
         request,
         s,

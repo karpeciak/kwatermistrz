@@ -35,6 +35,7 @@ KOMUNIKAT_DUPLIKAT = (
     "Dokument kosztowy został odrzucony, ponieważ dokument o takim rodzaju, numerze, dacie i kwocie "
     "jest już zarejestrowany."
 )
+KOMUNIKAT_LOG_DUPLIKAT = "Odrzucono duplikat dokumentu kosztowego; dokument jest już zarejestrowany."
 
 
 class DokumentKosztowyIn(BaseModel):
@@ -76,18 +77,18 @@ class WynikPrzyjecia:
     dokument: DokumentKosztowy | None = None
 
 
-def _zapisz_odrzucenie_duplikatu(s: Session, id_delegacji: str) -> None:
+def _zapisz_operacje_dokumentu(s: Session, id_delegacji: str, wynik: str, komunikat: str) -> None:
     zapisz_operacje(
         s,
-        id_korelacji=f"rozliczenie:{id_delegacji}",
+        id_korelacji=f"COR-{id_delegacji}",
         id_delegacji=id_delegacji,
         id_agenta="AG-06",
         etap=Status.DO_ROZLICZENIA,
         operacja="Dodanie dokumentu kosztowego",
-        wynik="Ostrzeżenie",
+        wynik=wynik,
         czas_trwania_ms=0,
         nr_proby=1,
-        komunikat="Odrzucono duplikat dokumentu kosztowego; dokument jest już zarejestrowany.",
+        komunikat=komunikat,
         id_komunikatu=None,
     )
 
@@ -100,7 +101,12 @@ def przyjmij_dokument(s: Session, delegacja: Delegacja, dane: DokumentKosztowyIn
     kwota = dane.kwota.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     klucz = klucz_dokumentu(dane.rodzaj, dane.numer, dane.data, kwota)
     if znajdz_duplikat(s, klucz) is not None:
-        _zapisz_odrzucenie_duplikatu(s, delegacja.id_delegacji)
+        _zapisz_operacje_dokumentu(
+            s,
+            delegacja.id_delegacji,
+            "Ostrzeżenie",
+            KOMUNIKAT_LOG_DUPLIKAT,
+        )
         return WynikPrzyjecia(False, KOMUNIKAT_DUPLIKAT)
 
     rozliczenie = s.scalar(select(Rozliczenie).where(Rozliczenie.id_delegacji == delegacja.id_delegacji))
@@ -130,8 +136,14 @@ def przyjmij_dokument(s: Session, delegacja: Delegacja, dane: DokumentKosztowyIn
     except IntegrityError:
         if znajdz_duplikat(s, klucz) is None:
             raise
-        _zapisz_odrzucenie_duplikatu(s, delegacja.id_delegacji)
+        _zapisz_operacje_dokumentu(
+            s,
+            delegacja.id_delegacji,
+            "Ostrzeżenie",
+            KOMUNIKAT_LOG_DUPLIKAT,
+        )
         return WynikPrzyjecia(False, KOMUNIKAT_DUPLIKAT)
+    _zapisz_operacje_dokumentu(s, delegacja.id_delegacji, "Sukces", KOMUNIKAT_PRZYJETY)
     return WynikPrzyjecia(True, KOMUNIKAT_PRZYJETY, dokument)
 
 
