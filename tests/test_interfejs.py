@@ -11,7 +11,7 @@ from kwatermistrz.agents import AGENCI
 from kwatermistrz.api.main import app, get_broker
 from kwatermistrz.db import sesja, teraz
 from kwatermistrz.models import Delegacja, DokumentKosztowy, LogOperacji, Status, Zolnierz
-from kwatermistrz.web.strony import CIASTECZKO, OPERACJA_PRZEKAZANIA
+from kwatermistrz.web.strony import CIASTECZKO, OPERACJA_PRZEKAZANIA, SLOWNIK_STATUSOW
 
 
 @pytest.fixture
@@ -203,3 +203,29 @@ def test_status_bez_nowych_informacji_jest_oznaczony_jako_nieaktualny(klient):
     zaloguj(klient, "ZOL-003")
     assert "nie ma nowych informacji" in klient.get("/app/wnioski/DEL-UI-STARY").text
     assert "nie ma nowych informacji" not in klient.get("/app/wnioski/DEL-UI-NOWY").text
+
+
+def test_slownik_statusow_opisuje_kazdy_status():
+    """S22IT1S0P2-32: słownik statusów delegacji – opis dla każdego etapu obsługi."""
+    statusy = {wartosc for nazwa, wartosc in vars(Status).items() if nazwa.isupper()}
+    assert set(SLOWNIK_STATUSOW) == statusy
+    assert all(opis.strip() for opis in SLOWNIK_STATUSOW.values())
+
+
+def test_interfejs_wyjasnia_znaczenie_statusu(klient):
+    """S22IT1S0P2-32: opis statusu na stronie wniosku i legenda statusów na liście wniosków."""
+    with sesja() as s:
+        s.add(
+            Delegacja(
+                id_delegacji="DEL-UI-SL",
+                id_zolnierza="ZOL-003",
+                dane_wniosku={},
+                status=Status.W_AKCEPTACJI,
+                id_zatwierdzajacego="ZOL-001",
+            )
+        )
+
+    zaloguj(klient, "ZOL-003")
+    assert SLOWNIK_STATUSOW[Status.W_AKCEPTACJI] in klient.get("/app/wnioski/DEL-UI-SL").text
+    lista = klient.get("/app/pulpit").text
+    assert "Co oznaczają statusy?" in lista and SLOWNIK_STATUSOW[Status.DO_ROZLICZENIA] in lista

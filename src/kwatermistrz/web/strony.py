@@ -64,6 +64,19 @@ OPERACJA_PRZYPOMNIENIA = "Przypomnienie o oczekującym wniosku"
 OPERACJA_PRZEKAZANIA = "Przekazanie wniosku zastępcy"
 # Po tylu minutach bez aktywności agentów status „w toku” może być nieaktualny (S22IT1S0P2-32, scenariusz 3a)
 NIEAKTUALNY_PO = timedelta(minutes=10)
+# Słownik statusów delegacji (S22IT1S0P2-32) – co oznacza każdy etap obsługi, w języku wnioskodawcy
+SLOWNIK_STATUSOW = {
+    Status.ROBOCZY: "Wersja robocza – wniosek nie został jeszcze złożony.",
+    Status.ZLOZONY: "Wniosek wpłynął do systemu – agenci sprawdzają jego kompletność i poprawność.",
+    Status.DO_UZUPELNIENIA: "Wniosek wymaga poprawek – uzupełnij wskazane dane i złóż go ponownie.",
+    Status.W_AKCEPTACJI: "Wniosek czeka na decyzję przełożonego.",
+    Status.ZATWIERDZONY: "Przełożony zgodził się na wyjazd – trwa przygotowanie polecenia, przejazdu i noclegu.",
+    Status.ODRZUCONY: "Przełożony nie wyraził zgody na wyjazd.",
+    Status.ZORGANIZOWANY: "Wyjazd jest przygotowany – polecenie wyjazdu, przejazd i nocleg są gotowe.",
+    Status.W_TRAKCIE: "Trwa wyjazd służbowy.",
+    Status.DO_ROZLICZENIA: "Wyjazd się zakończył – złóż rozliczenie z dokumentami kosztowymi.",
+    Status.ROZLICZONY: "Rozliczenie zostało sprawdzone i przekazane do komórki finansowej.",
+}
 WYNIK_DOKUMENT_PRZYJETY = "dokument-przyjety"
 
 szablony = Jinja2Templates(directory=KATALOG / "szablony")
@@ -131,6 +144,7 @@ szablony.env.filters.update(
     czas_na_etapie=czas_na_etapie,
     osoba=osoba,
 )
+szablony.env.globals["slownik_statusow"] = SLOWNIK_STATUSOW
 
 
 # ---------------------------------------------------------------- użytkownik
