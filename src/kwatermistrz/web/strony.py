@@ -13,6 +13,7 @@ Strony do rozbudowy w historyjkach sprintu 1:
 
 from datetime import datetime
 from pathlib import Path
+from typing import Annotated
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
@@ -22,10 +23,12 @@ from pydantic import ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from ..api.organizacja import przyjmij_wybor
 from ..api.rozliczenia import KOMUNIKAT_PRZYJETY, DokumentKosztowyIn, przyjmij_dokument
 from ..api.schemas import WniosekIn
 from ..api.wnioski import zarejestruj_wniosek
-from ..api.zaleznosci import get_broker, get_sesja
+from ..api.zaleznosci import dostep_do_podrozy, get_broker, get_sesja, sprawdz_csrf
+from ..config import settings
 from ..db import teraz
 from ..messaging import Broker, Komunikat, Typ
 from ..models import (
@@ -39,9 +42,10 @@ from ..models import (
     Status,
     Zolnierz,
 )
+from ..podroze import KRYTERIA, Kryterium, WyborPodrozy, zestawienie
+from ..sesje import CIASTECZKO, CZAS_SESJI, odczytaj_sesje, token_csrf, utworz_sesje
 
 KATALOG = Path(__file__).parent
-CIASTECZKO = "kwatermistrz_uzytkownik"
 STREFA = ZoneInfo("Europe/Warsaw")
 
 # Etapy, na których pracują agenci – strona wniosku odświeża się wtedy sama
@@ -94,7 +98,7 @@ szablony.env.filters.update(czas=czas_lokalny, ile_czasu=ile_czasu, klasa_status
 
 
 def biezacy_uzytkownik(request: Request, s: Session = Depends(get_sesja)) -> Zolnierz:
-    id_zolnierza = request.cookies.get(CIASTECZKO)
+    id_zolnierza = odczytaj_sesje(request.cookies.get(CIASTECZKO), settings.session_secret.get_secret_value())
     uzytkownik = s.get(Zolnierz, id_zolnierza) if id_zolnierza else None
     if uzytkownik is None:
         raise HTTPException(303, headers={"Location": "/app/logowanie"})
@@ -112,6 +116,7 @@ def liczba_do_zatwierdzenia(s: Session, uzytkownik: Zolnierz) -> int:
 def strona(request: Request, s: Session, szablon: str, uzytkownik: Zolnierz | None = None, **kontekst):
     if uzytkownik is not None:
         kontekst["do_zatwierdzenia"] = liczba_do_zatwierdzenia(s, uzytkownik)
+        kontekst["csrf"] = token_csrf(request.cookies.get(CIASTECZKO, ""), settings.session_secret.get_secret_value())
     return szablony.TemplateResponse(request, szablon, {"uzytkownik": uzytkownik, **kontekst})
 
 
@@ -130,19 +135,87 @@ def logowanie(request: Request, s: Session = Depends(get_sesja)):
 
 
 @router.post("/logowanie")
-def zaloguj(id_zolnierza: str = Form(...), s: Session = Depends(get_sesja)):
+def zaloguj(request: Request, id_zolnierza: str = Form(...), s: Session = Depends(get_sesja)):
     if s.get(Zolnierz, id_zolnierza) is None:
         raise HTTPException(404, "Nie ma takiego żołnierza")
     odpowiedz = RedirectResponse("/app/pulpit", status_code=303)
-    odpowiedz.set_cookie(CIASTECZKO, id_zolnierza, httponly=True, samesite="lax")
+    odpowiedz.set_cookie(
+        CIASTECZKO,
+        utworz_sesje(id_zolnierza, settings.session_secret.get_secret_value()),
+        max_age=CZAS_SESJI,
+        httponly=True,
+        samesite="lax",
+        secure=request.url.scheme == "https",
+    )
     return odpowiedz
 
 
-@router.get("/wyloguj")
-def wyloguj():
+@router.post("/wyloguj")
+def wyloguj(request: Request, csrf: str = Form("")):
+    sprawdz_csrf(request, csrf)
     odpowiedz = RedirectResponse("/app/logowanie", status_code=303)
     odpowiedz.delete_cookie(CIASTECZKO)
     return odpowiedz
+
+
+# ---------------------------------------------------------------- transport S22IT1S0P2-27, -57
+
+
+@router.get("/wnioski/{id_delegacji}/podroz", response_class=HTMLResponse)
+def podroz(
+    id_delegacji: str,
+    request: Request,
+    kryterium: Kryterium = "standardowe",
+    przekazano: bool = False,
+    s: Session = Depends(get_sesja),
+    uzytkownik: Zolnierz = Depends(biezacy_uzytkownik),
+):
+    d = dostep_do_podrozy(s, id_delegacji, uzytkownik)
+    dane = zestawienie(s, d, kryterium)
+    rozstrzygniete = any(w["status"] != "propozycja" for w in dane["warianty"])
+    return strona(
+        request,
+        s,
+        "podroz.html",
+        uzytkownik,
+        d=d,
+        **dane,
+        kryteria=KRYTERIA,
+        przekazano=przekazano,
+        rozstrzygniete=rozstrzygniete,
+        moze_wybrac=d.status == Status.ZATWIERDZONY and uzytkownik.id_zolnierza == d.id_zatwierdzajacego,
+    )
+
+
+@router.post("/wnioski/{id_delegacji}/podroz")
+async def wybierz_podroz(
+    id_delegacji: str,
+    request: Request,
+    id_tam: str = Form(""),
+    id_powrot: str = Form(""),
+    akcja: str = Form("wybierz"),
+    kryterium: Annotated[Kryterium, Form()] = "standardowe",
+    uzasadnienie: str = Form(""),
+    csrf: str = Form(""),
+    s: Session = Depends(get_sesja),
+    broker: Broker = Depends(get_broker),
+    uzytkownik: Zolnierz = Depends(biezacy_uzytkownik),
+):
+    sprawdz_csrf(request, csrf)
+    if akcja not in ("wybierz", "odrzuc"):
+        raise HTTPException(400, "Nieznana decyzja")
+    try:
+        dane = WyborPodrozy(
+            id_tam=(id_tam or None) if akcja == "wybierz" else None,
+            id_powrot=(id_powrot or None) if akcja == "wybierz" else None,
+            odrzuc_wszystkie=akcja == "odrzuc",
+            kryterium=kryterium,
+            uzasadnienie=uzasadnienie,
+        )
+    except ValidationError as e:
+        raise HTTPException(422, "Wybierz oba kierunki lub podaj przyczynę odrzucenia wszystkich wariantów") from e
+    await przyjmij_wybor(s, broker, id_delegacji, uzytkownik, dane)
+    return RedirectResponse(f"/app/wnioski/{id_delegacji}/podroz?przekazano=true", status_code=303)
 
 
 # ---------------------------------------------------------------- wnioskodawca

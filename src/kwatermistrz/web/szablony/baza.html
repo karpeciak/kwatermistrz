@@ -23,7 +23,10 @@
           <details class="dropdown">
             <summary>{{ uzytkownik.stopien }} {{ uzytkownik.imie_nazwisko }}</summary>
             <ul dir="rtl">
-              <li><a href="/app/wyloguj">Wyloguj</a></li>
+              <li><form method="post" action="/app/wyloguj">
+                <input type="hidden" name="csrf" value="{{ csrf }}">
+                <button type="submit" class="outline">Wyloguj</button>
+              </form></li>
             </ul>
           </details>
         </li>

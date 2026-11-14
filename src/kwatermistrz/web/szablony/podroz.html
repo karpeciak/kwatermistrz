@@ -1,0 +1,60 @@
+{% extends "baza.html" %}
+{% block tytul %}Podróż {{ d.id_delegacji }}{% endblock %}
+{% block tresc %}
+<p><a href="/app/wnioski/{{ d.id_delegacji }}">Wróć do wniosku {{ d.id_delegacji }}</a></p>
+<h2>Wybór wariantu podróży</h2>
+{% if przekazano %}<p role="status">Decyzja przekazana do agenta transportu. Odśwież stronę, aby sprawdzić zapis.</p>{% endif %}
+<p>Najpierw sprawdzamy dotarcie na czas. Następnie porównujemy wybrane kryterium,
+  koszt, bezpieczeństwo, przesiadki, punktualność i czas podróży.</p>
+<p>{{ uwaga }}</p>
+{% if istotna_roznica_czasu %}<p class="komunikat">Warianty w jednym kierunku różnią się czasem o ponad godzinę. Rozważ zmianę kryterium na najkrótszy czas lub punktualność.</p>{% endif %}
+{% if not termin_rozpoczecia %}<p class="komunikat">Brak godziny rozpoczęcia szkolenia — sprawdź termin dojazdu przed wyborem.</p>{% endif %}
+<form method="get">
+  <label for="kryterium">Najważniejsze kryterium</label>
+  <select id="kryterium" name="kryterium">
+  {% for wartosc, opis in kryteria.items() %}<option value="{{ wartosc }}" {% if kryterium == wartosc %}selected{% endif %}>{{ opis }}</option>{% endfor %}
+  </select>
+  <button type="submit" class="secondary">Porównaj ponownie</button>
+</form>
+{% for kierunek in brak_kierunkow %}<p class="komunikat">Brak wariantów: {{ kierunek }}. Podróż wymaga uzgodnienia z osobą akceptującą.</p>{% endfor %}
+{% if rozstrzygniete %}<p role="status">Decyzja została zapisana. Wybrane przejazdy lub przyczyny odrzucenia są widoczne poniżej.</p>{% endif %}
+{% if not moze_wybrac %}<p>Wyboru dokonuje osoba akceptująca zatwierdzoną podróż.</p>{% endif %}
+<form method="post" action="/app/wnioski/{{ d.id_delegacji }}/podroz">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <input type="hidden" name="kryterium" value="{{ kryterium }}">
+  {% for kierunek, pole in [("Tam", "id_tam"), ("Powrót", "id_powrot")] %}
+  <fieldset>
+    <legend><strong>{{ kierunek }}</strong></legend>
+    <div class="overflow-auto"><table>
+      <thead><tr><th>Wybór</th><th>Trasa / transport</th><th>Odjazd / przyjazd</th><th>Czas</th><th>Koszt</th><th>Przesiadki</th><th>Punktualność</th><th>Bezpieczeństwo</th><th>Ocena i uzasadnienie</th></tr></thead>
+      <tbody>
+      {% for w in warianty if w.kierunek == kierunek %}
+      <tr>
+        <td><input type="radio" name="{{ pole }}" value="{{ w.id_przejazdu }}"
+          aria-label="{{ kierunek }}: {{ w.przewoznik }}, {{ w.godzina_odjazdu }}"
+          {% if w.status == "wybrana" %}checked{% endif %}
+          {% if not moze_wybrac or rozstrzygniete or w.spozniony %}disabled{% endif %}></td>
+        <td>{{ w.skad }} → {{ w.dokad }}<br>{{ w.srodek_transportu }} — {{ w.przewoznik }}</td>
+        <td>{{ w.data_przejazdu }} {{ w.godzina_odjazdu.strftime("%H:%M") }}<br>{{ w.przyjazd.strftime("%d.%m.%Y %H:%M") }}</td>
+        <td>{{ w.czas_min }} min</td><td>{{ "%.2f"|format(w.koszt) }} zł</td>
+        <td>{{ w.liczba_przesiadek }}</td><td>{{ "%.0f"|format(w.punktualnosc * 100) }}%</td>
+        <td>{{ w.bezpieczenstwo }}/5</td>
+        <td>{% if w.rekomendowany %}<strong>Rekomendowany: {{ kryteria[kryterium] }}</strong><br>{{ w.podstawa_rekomendacji }}<br>{% endif %}
+          {% if w.spozniony %}<strong>Przyjazd po rozpoczęciu szkolenia</strong><br>{% endif %}
+          {{ w.status }}<br>{{ w.uzasadnienie }}</td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table></div>
+  </fieldset>
+  {% endfor %}
+  {% if moze_wybrac and not rozstrzygniete %}
+  <label for="uzasadnienie">Uzasadnienie (wymagane dla innego wariantu lub odrzucenia wszystkich)</label>
+  <textarea id="uzasadnienie" name="uzasadnienie" maxlength="2000"></textarea>
+  <div class="grid">
+    <button type="submit" name="akcja" value="wybierz" {% if brak_kierunkow %}disabled{% endif %}>Zatwierdź oba przejazdy</button>
+    <button type="submit" name="akcja" value="odrzuc" class="secondary">Odrzuć wszystkie — do uzgodnienia</button>
+  </div>
+  {% endif %}
+</form>
+{% endblock %}

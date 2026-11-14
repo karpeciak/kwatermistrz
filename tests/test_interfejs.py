@@ -10,7 +10,6 @@ from kwatermistrz.agents import AGENCI
 from kwatermistrz.api.main import app, get_broker
 from kwatermistrz.db import sesja
 from kwatermistrz.models import Delegacja, DokumentKosztowy, Status
-from kwatermistrz.web.strony import CIASTECZKO
 
 
 @pytest.fixture
@@ -24,7 +23,6 @@ def klient(broker):
 def zaloguj(klient, id_zolnierza):
     r = klient.post("/app/logowanie", data={"id_zolnierza": id_zolnierza})
     assert r.status_code == 303
-    klient.cookies.set(CIASTECZKO, id_zolnierza)
 
 
 def test_bez_logowania_przekierowuje_do_logowania(klient):

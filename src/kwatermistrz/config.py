@@ -1,5 +1,8 @@
 """Konfiguracja z zmiennych środowiskowych (lokalnie: plik .env, w Azure: ustawienia Container Apps)."""
 
+from secrets import token_hex
+
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -10,6 +13,8 @@ class Settings(BaseSettings):
     amqp_url: str = "amqp://guest:guest@localhost:5672/"
     exchange: str = "kwatermistrz"
     polacz_broker: bool = True
+    # W Azure ustaw SESSION_SECRET, aby sesje przetrwały restart i działały między replikami.
+    session_secret: SecretStr = Field(default_factory=lambda: SecretStr(token_hex(32)))
 
     # S22IT1S0P2-13: termin na decyzję przełożonego i dodatkowy termin po przypomnieniu
     termin_decyzji_godz: float = 48

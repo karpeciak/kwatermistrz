@@ -37,6 +37,9 @@
 
   <article>
     <header><strong>Dane wniosku</strong></header>
+    {% if d.status in ["zatwierdzony", "zorganizowany", "w trakcie", "do rozliczenia", "rozliczony"] %}
+    <p><a href="/app/wnioski/{{ d.id_delegacji }}/podroz">Porównaj warianty podróży / zobacz wybór</a></p>
+    {% endif %}
     <div class="grid">
       <div><small>Wnioskodawca</small><p>{{ wnioskodawca.stopien }} {{ wnioskodawca.imie_nazwisko }}</p></div>
       <div><small>Cel</small><p>{{ d.cel_wyjazdu or w.get("cel_wyjazdu") or "–" }}</p></div>

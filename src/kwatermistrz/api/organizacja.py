@@ -10,6 +10,52 @@ Do zrobienia w sprincie 1:
   → komunikat `Typ.WYBOR_ZAKWATEROWANIA`.
 """
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, HTTPException, Request
+from sqlalchemy.orm import Session
+
+from ..messaging import Broker, Komunikat, Typ
+from ..models import Zolnierz
+from ..podroze import BladPodrozy, Kryterium, WyborPodrozy, sprawdz_decyzje, zestawienie
+from .zaleznosci import dostep_do_podrozy, get_broker, get_sesja, sprawdz_csrf, uzytkownik_sesji
 
 router = APIRouter(tags=["Organizacja wyjazdu"])
+
+
+@router.get("/delegacje/{id_delegacji}/warianty-podrozy")
+def warianty_podrozy(
+    id_delegacji: str,
+    kryterium: Kryterium = "standardowe",
+    s: Session = Depends(get_sesja),
+    uzytkownik: Zolnierz = Depends(uzytkownik_sesji),
+):
+    return zestawienie(s, dostep_do_podrozy(s, id_delegacji, uzytkownik), kryterium)
+
+
+async def przyjmij_wybor(s: Session, broker: Broker, id_delegacji: str, u: Zolnierz, wybor: WyborPodrozy):
+    d = dostep_do_podrozy(s, id_delegacji, u, zapis=True)
+    try:
+        sprawdz_decyzje(s, d, wybor)
+    except BladPodrozy as e:
+        raise HTTPException(409, str(e)) from e
+    await broker.publikuj(
+        Komunikat(
+            typ=Typ.WYBOR_TRANSPORTU,
+            id_delegacji=id_delegacji,
+            dane={**wybor.model_dump(), "id_osoby": u.id_zolnierza},
+        )
+    )
+    return {"przyjeto": True, "komunikat": "Decyzja przekazana do agenta transportu"}
+
+
+@router.post("/delegacje/{id_delegacji}/wybor-podrozy", status_code=202)
+async def wybor_podrozy(
+    id_delegacji: str,
+    wybor: WyborPodrozy,
+    request: Request,
+    s: Session = Depends(get_sesja),
+    broker: Broker = Depends(get_broker),
+    uzytkownik: Zolnierz = Depends(uzytkownik_sesji),
+):
+    """Sesja z /app/logowanie; X-CSRF-Token z formularza strony podróży."""
+    sprawdz_csrf(request, request.headers.get("X-CSRF-Token"))
+    return await przyjmij_wybor(s, broker, id_delegacji, uzytkownik, wybor)
