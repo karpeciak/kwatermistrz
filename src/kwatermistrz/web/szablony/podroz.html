@@ -11,6 +11,12 @@
   Inny środek wymaga osobnej zgody i uzasadnienia.
 </p>{% endif %}
 {% if blad %}<div role="alert" class="bledy">{{ blad }}</div>{% endif %}
+{% if brak_spojnej_pary and not rozstrzygniete %}<p class="komunikat">
+  Brak pary przejazdów, w której powrót rusza po przyjeździe na miejsce i rozpoczęciu zadania.
+  Uzupełnij ofertę z odpowiednią godziną albo przekaż podróż do uzgodnienia.
+</p>{% elif brak_spojnej_preferowanej_pary and not rozstrzygniete %}<p class="komunikat">
+  Wnioskowanym transportem nie ma zgodnej czasowo pary przejazdów. Sprawdź godziny w obu kierunkach.
+</p>{% endif %}
 {% if oferta_zapisana %}<p role="status">Oferta została zapisana. Możesz dodać kolejną lub wybrać przejazdy.</p>{% endif %}
 {% if przekazano and not rozstrzygniete %}<p role="status">Decyzja przekazana do agenta transportu. Odśwież stronę, aby sprawdzić zapis.</p>{% endif %}
 <p>Rekomendujemy warianty zgodne z wnioskowanym transportem i terminem. Następnie porównujemy wybrane kryterium,

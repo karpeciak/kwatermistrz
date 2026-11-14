@@ -219,17 +219,29 @@ def zestawienie(s: Session, d: Delegacja, kryterium: str = "standardowe") -> dic
                 "zgodny_z_preferencja": zgodny_transport(d, r.srodek_transportu),
             }
         )
-    for kierunek in KIERUNKI:
-        grupa = [w for w in warianty if w["kierunek"] == kierunek and not w["spozniony"] and w["zgodny_z_preferencja"]]
-        if not grupa:
-            continue
+    pary = [
+        (tam, powrot)
+        for tam in warianty
+        if tam["kierunek"] == "Tam" and not tam["spozniony"]
+        for powrot in warianty
+        if powrot["kierunek"] == "Powrót"
+        and datetime.combine(powrot["data_przejazdu"], powrot["godzina_odjazdu"])
+        >= max(tam["przyjazd"], deadline or tam["przyjazd"])
+    ]
+    zgodne_pary = [para for para in pary if all(w["zgodny_z_preferencja"] for w in para)]
 
-        def klucz(w, kierunek=kierunek):
-            r = s.get(Przejazd, w["id_przejazdu"])
-            p = s.get(Polaczenie, r.id_polaczenia)
-            return ocena(p, r.data_przejazdu, deadline if kierunek == "Tam" else None, kryterium)
+    def klucz_pary(para):
+        return tuple(
+            ocena(
+                s.get(Polaczenie, w["id_polaczenia"]),
+                w["data_przejazdu"],
+                deadline if w["kierunek"] == "Tam" else None,
+                kryterium,
+            )
+            for w in para
+        )
 
-        najlepszy = min(grupa, key=klucz)
+    for najlepszy in min(zgodne_pary, key=klucz_pary) if zgodne_pary else ():
         najlepszy["rekomendowany"] = True
         najlepszy["podstawa_rekomendacji"] = (
             f"Priorytet: {KRYTERIA[kryterium]}. "
@@ -245,7 +257,9 @@ def zestawienie(s: Session, d: Delegacja, kryterium: str = "standardowe") -> dic
             for kierunek in KIERUNKI
         ),
         "brak_kierunkow": [k for k in KIERUNKI if not any(w["kierunek"] == k for w in warianty)],
-        "mozna_zatwierdzic": all(any(w["kierunek"] == k and not w["spozniony"] for w in warianty) for k in KIERUNKI),
+        "mozna_zatwierdzic": bool(pary),
+        "brak_spojnej_pary": bool(warianty) and not pary,
+        "brak_spojnej_preferowanej_pary": bool(warianty) and not zgodne_pary,
         "termin_rozpoczecia": deadline,
         "trasa": trasa_delegacji(s, d),
         "preferowany_transport": preferencja(d),
@@ -281,8 +295,6 @@ def sprawdz_decyzje(s: Session, d: Delegacja, wybor: WyborPodrozy) -> list[Przej
             )
     podsumowanie = zestawienie(s, d, wybor.kryterium)
     ids_rekomendowane = {w["id_przejazdu"] for w in podsumowanie["warianty"] if w["rekomendowany"]}
-    if any(r.id_przejazdu not in ids_rekomendowane for r in wybrane) and not wybor.uzasadnienie:
-        raise BladPodrozy("Podaj uzasadnienie wyboru innego niż rekomendowany")
     p_tam, p_powrot = [s.get(Polaczenie, r.id_polaczenia) for r in wybrane]
     if p_tam is None or p_powrot is None:
         raise BladPodrozy("Brak danych wybranego połączenia")
@@ -291,5 +303,13 @@ def sprawdz_decyzje(s: Session, d: Delegacja, wybor: WyborPodrozy) -> list[Przej
     if deadline is not None and koniec_tam > deadline:
         raise BladPodrozy("Przejazd nie zapewnia dotarcia na rozpoczęcie szkolenia")
     if datetime.combine(wybrane[1].data_przejazdu, p_powrot.godzina_odjazdu) < max(koniec_tam, deadline or koniec_tam):
-        raise BladPodrozy("Powrót nie może rozpocząć się przed przyjazdem i rozpoczęciem szkolenia")
+        odjazd_powrotu = datetime.combine(wybrane[1].data_przejazdu, p_powrot.godzina_odjazdu)
+        najwczesniej = max(koniec_tam, deadline or koniec_tam)
+        raise BladPodrozy(
+            f"Powrót rusza {odjazd_powrotu:%d.%m.%Y o %H:%M}, a najwcześniejszy możliwy odjazd "
+            f"po przyjeździe i rozpoczęciu zadania to {najwczesniej:%d.%m.%Y o %H:%M}. "
+            "Wybierz późniejszy powrót albo wcześniejszy dojazd."
+        )
+    if any(r.id_przejazdu not in ids_rekomendowane for r in wybrane) and not wybor.uzasadnienie:
+        raise BladPodrozy("Podaj uzasadnienie wyboru innego niż rekomendowany")
     return wybrane

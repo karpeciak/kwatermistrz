@@ -1,4 +1,5 @@
 import json
+import socket
 from io import BytesIO
 from urllib.error import URLError
 from urllib.parse import parse_qs, urlsplit
@@ -66,6 +67,16 @@ def test_awaria_api_nie_zwraca_fikcyjnych_miast(monkeypatch):
         miejscowosci("Bydgoszcz")
     assert e.value.status_code == 503
     assert "samodzielnie" in e.value.detail
+
+
+def test_blad_dns_jest_rozrozniony_od_braku_wynikow(monkeypatch, caplog):
+    def awaria(*args, **kwargs):
+        raise URLError(socket.gaierror(11001, "getaddrinfo failed"))
+
+    monkeypatch.setattr(m, "urlopen", awaria)
+    with pytest.raises(m.ZrodloNiedostepne, match="błąd DNS"):
+        m.szukaj_miejscowosci("Bydgoszcz")
+    assert "URLError" in caplog.text and "Bydgoszcz" not in caplog.text
 
 
 def test_slownik_transportu_jest_spojny_z_formularzem():

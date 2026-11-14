@@ -107,17 +107,8 @@ class AgentTransportu(Agent):
             ]
             limit = deadline if kierunek == "Tam" else None
             oferty.sort(key=lambda p: ocena(p, data, limit))
-            najlepsze = next(
-                (p for p in oferty if not ocena(p, data, limit)[0] and zgodny_transport(d, p.srodek_transportu)), None
-            )
             for p in oferty:
-                rekomendowany = p is najlepsze
-                powod = (
-                    "Rekomendacja regułowa: preferowany transport, termin, koszt, bezpieczeństwo, "
-                    "przesiadki, punktualność, czas."
-                    if rekomendowany
-                    else "Wariant alternatywny do porównania."
-                )
+                powod = "Wariant alternatywny do porównania."
                 if not zgodny_transport(d, p.srodek_transportu):
                     powod = "Inny środek niż we wniosku — wybór wymaga zgody na zmianę i uzasadnienia."
                 if ocena(p, data, limit)[0]:
@@ -132,19 +123,29 @@ class AgentTransportu(Agent):
                         koszt=p.koszt,
                         koszt_indywidualny=p.koszt,
                         status=StatusRezerwacji.PROPOZYCJA,
-                        rekomendowany=rekomendowany,
+                        rekomendowany=False,
                         uzasadnienie=powod,
                     )
                 )
+        s.flush()
+        porownanie = zestawienie(s, d)
+        for w in porownanie["warianty"]:
+            if w["rekomendowany"]:
+                r = s.get(Przejazd, w["id_przejazdu"])
+                r.rekomendowany = True
+                r.uzasadnienie = "Rekomendacja zgodnej czasowo pary przejazdów i wnioskowanego transportu."
+        for kierunek in ("Tam", "Powrót"):
+            grupa = [w for w in porownanie["warianty"] if w["kierunek"] == kierunek]
+            najlepsze = next((w for w in grupa if w["rekomendowany"]), None)
             ktx.decyzja(
                 Decyzja(
                     typ="Rekomendacja wariantu podróży",
-                    wybrany_wariant=f"{kierunek}: {najlepsze.id_polaczenia}"
+                    wybrany_wariant=f"{kierunek}: {najlepsze['id_polaczenia']}"
                     if najlepsze
                     else f"{kierunek}: do uzgodnienia",
-                    liczba_wariantow=len(oferty),
-                    uzasadnienie="Preferowany środek transportu i terminowość, następnie koszt, bezpieczeństwo, "
-                    "przesiadki, punktualność i czas.",
+                    liczba_wariantow=len(grupa),
+                    uzasadnienie="Zgodna czasowo para, preferowany transport i terminowość; następnie koszt, "
+                    "bezpieczeństwo, przesiadki, punktualność i czas.",
                     decyzja_finansowa=True,
                 )
             )

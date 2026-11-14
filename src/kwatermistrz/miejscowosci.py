@@ -5,6 +5,8 @@ Ograniczenie jednego zapytania/s oraz cache dotyczą pojedynczego procesu.
 """
 
 import json
+import logging
+import socket
 from collections import OrderedDict
 from threading import Lock
 from time import monotonic
@@ -26,6 +28,7 @@ class ZrodloNiedostepne(RuntimeError):
 _blokada = Lock()
 _cache = OrderedDict()
 _ostatnie = float("-inf")
+_log = logging.getLogger(__name__)
 
 
 def szukaj_miejscowosci(tekst: str) -> list[dict]:
@@ -77,8 +80,15 @@ def szukaj_miejscowosci(tekst: str) -> list[dict]:
                     wynik.append({"nazwa": nazwa, "opis": opis})
                     widziane.add((nazwa, opis))
         except (URLError, OSError, ValueError, TypeError, AttributeError) as e:
+            # Bez wyszukiwanego tekstu i danych wniosku; szczegóły tylko w logu serwera.
+            _log.warning("Błąd źródła miejscowości (%s): %s", type(e).__name__, e)
+            if isinstance(e, URLError) and isinstance(e.reason, socket.gaierror):
+                raise ZrodloNiedostepne(
+                    "Nie można ustalić adresu serwera wyszukiwarki miejscowości (błąd DNS). "
+                    "Możesz wpisać nazwę samodzielnie."
+                ) from e
             raise ZrodloNiedostepne(
-                "Wyszukiwarka miejscowości jest chwilowo niedostępna. Możesz wpisać nazwę samodzielnie."
+                "Nie udało się pobrać wyników z API miejscowości. Możesz wpisać nazwę samodzielnie."
             ) from e
         _cache[klucz] = (monotonic(), wynik)
         while len(_cache) > 256:

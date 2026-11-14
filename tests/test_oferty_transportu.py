@@ -473,3 +473,57 @@ def test_potwierdzenie_pojazdu_dla_krakowa_pozwala_wybrac_zadany_transport():
         wybrane = [w for w in zestawienie(s, s.get(Delegacja, ident))["warianty"] if w["status"] == "wybrana"]
         assert len(wybrane) == 2
         assert all(w["srodek_transportu"] == "pojazd służbowy" for w in wybrane)
+
+
+def test_jeden_dzien_nie_rekomenduje_powrotu_przed_dojazdem_pojazdu():
+    broker = BrokerLokalny()
+    ident = nowy_wniosek(
+        broker,
+        "Toruń",
+        "2026-11-16",
+        data_powrotu="2026-11-16",
+        srodek_transportu="pojazd służbowy",
+    )
+    with sesja() as s:
+        d = s.get(Delegacja, ident)
+        dane = zestawienie(s, d)
+        assert not any(w["rekomendowany"] for w in dane["warianty"])
+        assert dane["brak_spojnej_preferowanej_pary"]
+        assert not any(r.rekomendowany for r in s.scalars(select(Przejazd)))
+        html = widok_podrozy(ident, request_form()[0], s, s.get(Zolnierz, "ZOL-001")).body.decode()
+        assert "nie ma zgodnej czasowo pary" in html
+
+
+def test_rekomendowana_para_wybiera_pozniejszy_powrot_i_daje_sie_zapisac():
+    broker = BrokerLokalny()
+    ident = nowy_wniosek(broker, data_powrotu="2026-11-15")
+    dodaj(broker, ident, oferta(godzina_odjazdu="08:00", czas_min=180))
+    dodaj(broker, ident, oferta("Powrót", godzina_odjazdu="07:00", koszt="10.00"))
+    with sesja() as s:
+        dane = zestawienie(s, s.get(Delegacja, ident))
+        assert dane["brak_spojnej_pary"] and not dane["mozna_zatwierdzic"]
+        assert not any(w["rekomendowany"] for w in dane["warianty"])
+    dodaj(broker, ident, oferta("Powrót", godzina_odjazdu="18:00", koszt="100.00"))
+    with sesja() as s:
+        d = s.get(Delegacja, ident)
+        dane = zestawienie(s, d)
+        wybrane = sprawdz_decyzje(s, d, WyborPodrozy(**rekomendowane(s, ident)))
+        assert len(wybrane) == 2 and dane["mozna_zatwierdzic"]
+        powrot = next(w for w in dane["warianty"] if w["rekomendowany"] and w["kierunek"] == "Powrót")
+        assert powrot["godzina_odjazdu"].hour == 18
+        zakoncz(przyjmij_wybor(s, broker, ident, s.get(Zolnierz, "ZOL-001"), WyborPodrozy(**rekomendowane(s, ident))))
+
+
+def test_blad_czasu_wskazuje_konkretne_godziny_zamiast_ogolnego_komunikatu():
+    broker = BrokerLokalny()
+    ident = nowy_wniosek(broker, data_powrotu="2026-11-15")
+    dodaj(broker, ident, oferta(godzina_odjazdu="16:00", czas_min=150))
+    dodaj(broker, ident, oferta("Powrót", godzina_odjazdu="17:00"))
+    with sesja() as s:
+        d = s.get(Delegacja, ident)
+        ids = {
+            "id_tam" if w["kierunek"] == "Tam" else "id_powrot": w["id_przejazdu"]
+            for w in zestawienie(s, d)["warianty"]
+        }
+        with pytest.raises(BladPodrozy, match="17:00.*18:30"):
+            sprawdz_decyzje(s, d, WyborPodrozy(**ids))
