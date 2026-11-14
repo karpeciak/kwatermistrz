@@ -38,6 +38,13 @@ KRYTERIA = {
 }
 KIERUNKI = ("Tam", "Powrót")
 PROG_ROZNICY_CZASU_MIN = 60  # próg prezentacji MVP; do uzgodnienia z PO
+SRODKI_TRANSPORTU = {
+    "kolej": "Kolej",
+    "autobus": "Autobus",
+    "transport wojskowy": "Transport wojskowy",
+    "pojazd służbowy": "Pojazd z jednostki",
+    "samochód prywatny": "Pojazd prywatny",
+}
 
 
 class BladPodrozy(ValueError):
@@ -48,13 +55,26 @@ def nazwa_miejscowosci(wartosc: str) -> str:
     return " ".join(normalize("NFC", wartosc).split()).casefold()
 
 
+def nazwa_transportu(wartosc: str | None) -> str:
+    slowo = nazwa_miejscowosci(wartosc or "")
+    return {"pociąg": "kolej", "pociag": "kolej", "pojazd z jednostki": "pojazd służbowy"}.get(slowo, slowo)
+
+
+def preferencja(d: Delegacja) -> str:
+    return nazwa_transportu(d.srodek_transportu or d.dane_wniosku.get("srodek_transportu"))
+
+
+def zgodny_transport(d: Delegacja, srodek: str) -> bool:
+    return not preferencja(d) or nazwa_transportu(srodek) == preferencja(d)
+
+
 class WariantPodrozyIn(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     klucz: UUID
     kierunek: Literal["Tam", "Powrót"]
     przewoznik: str = Field(min_length=1, max_length=100)
-    srodek_transportu: Literal["kolej", "autobus", "transport wojskowy", "pojazd służbowy"]
+    srodek_transportu: Literal["kolej", "autobus", "transport wojskowy", "pojazd służbowy", "samochód prywatny"]
     godzina_odjazdu: time
     czas_min: int = Field(gt=0, le=2880)
     koszt: Decimal = Field(ge=0, max_digits=10, decimal_places=2)
@@ -111,6 +131,7 @@ class WyborPodrozy(BaseModel):
     odrzuc_wszystkie: bool = False
     uzasadnienie: str = Field(default="", max_length=2000)
     kryterium: Kryterium = "standardowe"
+    zgoda_na_zmiane_transportu: bool = False
 
     @model_validator(mode="after")
     def sprawdz_wybor(self):
@@ -136,6 +157,8 @@ def termin(s: Session, d: Delegacja) -> datetime | None:
         p
         and p.godzina_rozpoczecia
         and nazwa_miejscowosci(p.miejscowosc) == nazwa_miejscowosci(d.miejsce_docelowe or "")
+        and (d.data_wyjazdu is None or d.data_wyjazdu <= p.data_rozpoczecia)
+        and (d.data_powrotu is None or p.data_rozpoczecia <= d.data_powrotu)
     ):
         return datetime.combine(p.data_rozpoczecia, p.godzina_rozpoczecia)
     return None
@@ -185,14 +208,19 @@ def zestawienie(s: Session, d: Delegacja, kryterium: str = "standardowe") -> dic
                 "punktualnosc": p.punktualnosc,
                 "bezpieczenstwo": p.ocena_bezpieczenstwa,
                 "status": r.status,
-                "uzasadnienie": r.uzasadnienie,
-                "zrodlo": r.powod_zmiany if p.id_polaczenia.startswith("M-") else None,
+                "uzasadnienie": r.uzasadnienie
+                if zgodny_transport(d, r.srodek_transportu)
+                else "Inny środek niż we wniosku — wymaga zgody na zmianę i uzasadnienia.",
+                "zrodlo": r.powod_zmiany
+                if p.id_polaczenia.startswith("M-")
+                else "Ewidencja połączeń; dane przykładowe, bez potwierdzenia dostępności przewoźnika lub jednostki.",
                 "spozniony": spozniony,
                 "rekomendowany": False,
+                "zgodny_z_preferencja": zgodny_transport(d, r.srodek_transportu),
             }
         )
     for kierunek in KIERUNKI:
-        grupa = [w for w in warianty if w["kierunek"] == kierunek and not w["spozniony"]]
+        grupa = [w for w in warianty if w["kierunek"] == kierunek and not w["spozniony"] and w["zgodny_z_preferencja"]]
         if not grupa:
             continue
 
@@ -205,7 +233,8 @@ def zestawienie(s: Session, d: Delegacja, kryterium: str = "standardowe") -> dic
         najlepszy["rekomendowany"] = True
         najlepszy["podstawa_rekomendacji"] = (
             f"Priorytet: {KRYTERIA[kryterium]}. "
-            "Najpierw terminowość; przy remisie koszt, bezpieczeństwo, przesiadki, punktualność i czas."
+            "Zgodność z preferowanym transportem i terminem; następnie koszt, bezpieczeństwo, "
+            "przesiadki, punktualność i czas."
         )
     return {
         "kryterium": kryterium,
@@ -219,6 +248,13 @@ def zestawienie(s: Session, d: Delegacja, kryterium: str = "standardowe") -> dic
         "mozna_zatwierdzic": all(any(w["kierunek"] == k and not w["spozniony"] for w in warianty) for k in KIERUNKI),
         "termin_rozpoczecia": deadline,
         "trasa": trasa_delegacji(s, d),
+        "preferowany_transport": preferencja(d),
+        "brak_preferowanego": [
+            k
+            for k in KIERUNKI
+            if preferencja(d)
+            and not any(w["kierunek"] == k and w["zgodny_z_preferencja"] and not w["spozniony"] for w in warianty)
+        ],
         "do_uzgodnienia": decyzja_do_uzgodnienia(s, d),
         "uwaga": "Przed zatwierdzeniem sprawdź, czy odjazd powrotny następuje po zakończeniu zadania.",
     }
@@ -237,6 +273,12 @@ def sprawdz_decyzje(s: Session, d: Delegacja, wybor: WyborPodrozy) -> list[Przej
     wybrane = [next((r for r in rows if r.id_przejazdu == i), None) for i in (wybor.id_tam, wybor.id_powrot)]
     if any(r is None for r in wybrane) or [r.kierunek for r in wybrane] != list(KIERUNKI):
         raise BladPodrozy("Wybierz istniejące warianty tej delegacji we właściwych kierunkach")
+    if any(not zgodny_transport(d, r.srodek_transportu) for r in wybrane):
+        if not wybor.zgoda_na_zmiane_transportu or not wybor.uzasadnienie:
+            raise BladPodrozy(
+                "Wybór zmienia wnioskowany środek transportu. Zaznacz zgodę na zmianę i podaj uzasadnienie "
+                "albo uzupełnij ofertę preferowanego transportu."
+            )
     podsumowanie = zestawienie(s, d, wybor.kryterium)
     ids_rekomendowane = {w["id_przejazdu"] for w in podsumowanie["warianty"] if w["rekomendowany"]}
     if any(r.id_przejazdu not in ids_rekomendowane for r in wybrane) and not wybor.uzasadnienie:

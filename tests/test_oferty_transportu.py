@@ -23,7 +23,7 @@ from kwatermistrz.db import sesja
 from kwatermistrz.lokalnie import BrokerLokalny
 from kwatermistrz.messaging import Komunikat, Typ
 from kwatermistrz.models import Delegacja, LogDecyzji, Polaczenie, Przejazd, StatusRezerwacji, Zolnierz
-from kwatermistrz.podroze import WariantPodrozyIn, WyborPodrozy, zestawienie
+from kwatermistrz.podroze import BladPodrozy, WariantPodrozyIn, WyborPodrozy, sprawdz_decyzje, zestawienie
 from kwatermistrz.sesje import CIASTECZKO, token_csrf, utworz_sesje
 from kwatermistrz.web.strony import dane_wniosku, uzupelnij_wariant, widok_podrozy, wybierz_podroz
 
@@ -38,21 +38,26 @@ def zakoncz(korutyna):
     raise AssertionError("Adapter lokalny oczekuje zewnętrznego I/O — ten test wymaga zmiany")
 
 
-def nowy_wniosek(broker, miejsce="bydgoszcz", data="2026-11-15"):
+def nowy_wniosek(broker, miejsce="bydgoszcz", data="2026-11-15", **zmiany):
     with sesja() as s:
         d = zakoncz(
             zarejestruj_wniosek(
                 s,
                 broker,
                 WniosekIn(
-                    id_zolnierza="ZOL-003",
-                    id_przedsiewziecia="PRZ-01",
-                    cel_wyjazdu="Samodzielny test Bydgoszczy",
-                    miejsce_docelowe=miejsce,
-                    data_wyjazdu=data,
-                    data_powrotu="2026-12-11",
-                    srodek_transportu="kolej",
-                    potrzeba_zakwaterowania=False,
+                    **(
+                        {
+                            "id_zolnierza": "ZOL-003",
+                            "id_przedsiewziecia": "PRZ-01",
+                            "cel_wyjazdu": "Samodzielny test Bydgoszczy",
+                            "miejsce_docelowe": miejsce,
+                            "data_wyjazdu": data,
+                            "data_powrotu": "2026-12-11",
+                            "srodek_transportu": "kolej",
+                            "potrzeba_zakwaterowania": False,
+                        }
+                        | zmiany
+                    )
                 ),
             )
         )
@@ -356,3 +361,115 @@ def test_agent_sam_odrzuca_nieuprawnione_dodanie_oferty():
     )
     with sesja() as s:
         assert not zestawienie(s, s.get(Delegacja, ident))["warianty"]
+
+
+def test_krakow_z_innym_terminem_i_pojazdem_jednostki_nie_rekomenduje_pociagu():
+    broker = BrokerLokalny()
+    ident = nowy_wniosek(
+        broker,
+        "Kraków",
+        id_przedsiewziecia="PRZ-03",
+        data_powrotu="2026-11-19",
+        srodek_transportu="pojazd służbowy",
+    )
+    with sesja() as s:
+        dane = zestawienie(s, s.get(Delegacja, ident))
+        assert dane["termin_rozpoczecia"] is None  # PRZ-03 zaczyna się dopiero 30.11
+        assert len(dane["warianty"]) == 4
+        assert not any(w["rekomendowany"] for w in dane["warianty"])
+        assert dane["brak_preferowanego"] == ["Tam", "Powrót"]
+        html = widok_podrozy(ident, request_form()[0], s, s.get(Zolnierz, "ZOL-001")).body.decode()
+        assert "Dostępność pojazdu musi potwierdzić jednostka" in html
+        assert "Rekomendowany:" not in html
+        assert 'name="zgoda_na_zmiane_transportu"' in html
+
+
+@pytest.mark.parametrize("zgoda,uzasadnienie", [(False, "Zgoda na kolej"), (True, ""), (False, "")])
+def test_zmiana_transportu_wymaga_zarowno_zgody_jak_i_uzasadnienia(zgoda, uzasadnienie):
+    broker = BrokerLokalny()
+    ident = nowy_wniosek(broker, "Kraków", srodek_transportu="pojazd służbowy")
+    with sesja() as s:
+        d = s.get(Delegacja, ident)
+        w = zestawienie(s, d)["warianty"]
+        ids = {"id_tam" if r["kierunek"] == "Tam" else "id_powrot": r["id_przejazdu"] for r in w}
+        with pytest.raises(BladPodrozy, match="zgodę na zmianę"):
+            sprawdz_decyzje(s, d, WyborPodrozy(**ids, zgoda_na_zmiane_transportu=zgoda, uzasadnienie=uzasadnienie))
+
+
+def test_swiadoma_zmiana_transportu_zapisuje_wybor_bez_bledu_obcego_terminu():
+    broker = BrokerLokalny()
+    ident = nowy_wniosek(
+        broker,
+        "Kraków",
+        id_przedsiewziecia="PRZ-03",
+        data_powrotu="2026-11-19",
+        srodek_transportu="pojazd służbowy",
+    )
+    with sesja() as s:
+        w = zestawienie(s, s.get(Delegacja, ident))["warianty"]
+        ids = {"id_tam" if r["kierunek"] == "Tam" else "id_powrot": r["id_przejazdu"] for r in w}
+        request, csrf = request_form()
+        response = zakoncz(
+            wybierz_podroz(
+                ident,
+                request,
+                **{k: str(v) for k, v in ids.items()},
+                akcja="wybierz",
+                zgoda_na_zmiane_transportu=True,
+                uzasadnienie="Jednostka uzgodniła zmianę na kolej",
+                csrf=csrf,
+                s=s,
+                broker=broker,
+                uzytkownik=s.get(Zolnierz, "ZOL-001"),
+            )
+        )
+        assert response.status_code == 303
+    with sesja() as s:
+        rows = list(
+            s.scalars(
+                select(Przejazd).where(Przejazd.id_delegacji == ident, Przejazd.status == StatusRezerwacji.WYBRANA)
+            )
+        )
+        assert len(rows) == 2
+        wpis = s.scalar(select(LogDecyzji).where(LogDecyzji.typ_decyzji == "Zapis wyboru podróży"))
+        assert "zgoda na zmianę transportu: True" in wpis.uzasadnienie
+
+
+def test_pojazd_jednostki_ma_pierwszenstwo_przed_tansza_koleja():
+    broker = BrokerLokalny()
+    ident = nowy_wniosek(broker, "Toruń", "2026-12-06", srodek_transportu="pojazd służbowy")
+    with sesja() as s:
+        dane = zestawienie(s, s.get(Delegacja, ident))
+        rekomendacje = [w for w in dane["warianty"] if w["rekomendowany"]]
+        assert len(rekomendacje) == 2
+        assert all(w["srodek_transportu"] == "pojazd służbowy" for w in rekomendacje)
+
+
+def test_potwierdzenie_pojazdu_dla_krakowa_pozwala_wybrac_zadany_transport():
+    broker = BrokerLokalny()
+    ident = nowy_wniosek(
+        broker,
+        "Kraków",
+        id_przedsiewziecia="PRZ-03",
+        data_powrotu="2026-11-19",
+        srodek_transportu="pojazd służbowy",
+    )
+    for kierunek in ("Tam", "Powrót"):
+        dodaj(
+            broker,
+            ident,
+            oferta(
+                kierunek,
+                srodek_transportu="pojazd służbowy",
+                przewoznik="JW 1001",
+                zrodlo="Testowe potwierdzenie dyspozytora pojazdów jednostki",
+            ),
+        )
+    with sesja() as s:
+        ids = rekomendowane(s, ident)
+        assert len(ids) == 2
+        zakoncz(przyjmij_wybor(s, broker, ident, s.get(Zolnierz, "ZOL-001"), WyborPodrozy(**ids)))
+    with sesja() as s:
+        wybrane = [w for w in zestawienie(s, s.get(Delegacja, ident))["warianty"] if w["status"] == "wybrana"]
+        assert len(wybrane) == 2
+        assert all(w["srodek_transportu"] == "pojazd służbowy" for w in wybrane)

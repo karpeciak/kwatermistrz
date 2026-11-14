@@ -23,7 +23,7 @@ from ..messaging import Broker
 from ..models import Zolnierz
 from ..seed import zaladuj_dane_poczatkowe
 from ..web import strony
-from . import organizacja, rozliczenia, wnioski, zatwierdzenia
+from . import organizacja, rozliczenia, slowniki, wnioski, zatwierdzenia
 from .schemas import ZolnierzOut
 from .zaleznosci import get_broker, get_sesja
 
@@ -46,7 +46,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Kwatermistrz API", version=__version__, lifespan=lifespan)
-for modul in (wnioski, zatwierdzenia, organizacja, rozliczenia):
+for modul in (wnioski, zatwierdzenia, organizacja, rozliczenia, slowniki):
     app.include_router(modul.router)
 
 # Interfejs użytkownika (strony pod /app) – src/kwatermistrz/web/

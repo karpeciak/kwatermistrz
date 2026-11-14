@@ -21,9 +21,12 @@
 
   <div class="grid">
     <label>Cel wyjazdu <input name="cel_wyjazdu" placeholder="np. szkolenie, kurs, odprawa"></label>
-    <label>Miejsce docelowe <input name="miejsce_docelowe" list="miasta-ofert" placeholder="miejscowość, jednostka"></label>
+    <label>Miejsce docelowe <input id="miejsce-docelowe" name="miejsce_docelowe" maxlength="80" placeholder="np. Bydgoszcz"></label>
   </div>
-  <datalist id="miasta-ofert">{% for miasto in miasta_ofert %}<option value="{{ miasto }}">{% endfor %}</datalist>
+  <button type="button" class="secondary" hx-get="/app/miejscowosci" hx-include="#miejsce-docelowe"
+    hx-target="#wyniki-miejscowosci" hx-disabled-elt="this">Szukaj miejscowości w Polsce</button>
+  <div id="wyniki-miejscowosci" aria-live="polite"></div>
+  <small>Wyszukiwanie wysyła do Photon tylko wpisaną nazwę miejscowości. Możesz też wpisać nazwę samodzielnie.</small>
   <p><small>{% if miasta_ofert %}Oferty przejazdów są wpisane dla: {{ miasta_ofert | join(", ") }}. {% endif %}
     Możesz podać inne miasto. Po zatwierdzeniu wniosku osoba akceptująca uzupełni sprawdzone oferty na ekranie podróży.
     Dane przewoźników nie są pobierane automatycznie.</small></p>
@@ -38,10 +41,7 @@
   <div class="grid">
     <label>Preferowany transport
       <select name="srodek_transportu">
-        <option value="kolej">kolej</option>
-        <option value="transport wojskowy">transport wojskowy</option>
-        <option value="pojazd służbowy">pojazd służbowy</option>
-        <option value="samochód prywatny">pojazd prywatny</option>
+        {% for wartosc, opis in srodki_transportu.items() %}<option value="{{ wartosc }}">{{ opis }}</option>{% endfor %}
       </select>
     </label>
     <label class="checkbox-w-siatce">
@@ -53,4 +53,5 @@
   <button type="submit">Złóż wniosek</button>
   <small>Po złożeniu Agent Wniosków sprawdzi kompletność danych i przekaże wniosek przełożonemu.</small>
 </form>
+<script src="/statyczne/miejscowosci.js" defer></script>
 {% endblock %}

@@ -45,6 +45,7 @@ from ..podroze import (
     sprawdz_dodanie_wariantu,
     termin,
     zestawienie,
+    zgodny_transport,
 )
 from .base import Agent, BladProcesu, Kontekst, pobierz_delegacje
 
@@ -106,14 +107,19 @@ class AgentTransportu(Agent):
             ]
             limit = deadline if kierunek == "Tam" else None
             oferty.sort(key=lambda p: ocena(p, data, limit))
-            najlepsze = next((p for p in oferty if not ocena(p, data, limit)[0]), None)
+            najlepsze = next(
+                (p for p in oferty if not ocena(p, data, limit)[0] and zgodny_transport(d, p.srodek_transportu)), None
+            )
             for p in oferty:
                 rekomendowany = p is najlepsze
                 powod = (
-                    "Rekomendacja regułowa: termin, koszt, bezpieczeństwo, przesiadki, punktualność, czas."
+                    "Rekomendacja regułowa: preferowany transport, termin, koszt, bezpieczeństwo, "
+                    "przesiadki, punktualność, czas."
                     if rekomendowany
                     else "Wariant alternatywny do porównania."
                 )
+                if not zgodny_transport(d, p.srodek_transportu):
+                    powod = "Inny środek niż we wniosku — wybór wymaga zgody na zmianę i uzasadnienia."
                 if ocena(p, data, limit)[0]:
                     powod = "Przyjazd po rozpoczęciu szkolenia — wariant niedostępny do wyboru."
                 s.add(
@@ -137,12 +143,15 @@ class AgentTransportu(Agent):
                     if najlepsze
                     else f"{kierunek}: do uzgodnienia",
                     liczba_wariantow=len(oferty),
-                    uzasadnienie="Terminowość, następnie koszt, bezpieczeństwo, przesiadki, punktualność i czas.",
+                    uzasadnienie="Preferowany środek transportu i terminowość, następnie koszt, bezpieczeństwo, "
+                    "przesiadki, punktualność i czas.",
                     decyzja_finansowa=True,
                 )
             )
             if najlepsze is None:
-                ktx.ostrzezenie(f"Brak odpowiedniego wariantu: {kierunek}; konieczne uzgodnienie")
+                ktx.ostrzezenie(
+                    f"Brak potwierdzonego wariantu zgodnego z preferencją i terminem: {kierunek}; konieczne uzgodnienie"
+                )
         ktx.wyslij(
             Typ.POWIADOMIENIE,
             {
@@ -207,6 +216,7 @@ class AgentTransportu(Agent):
                 if wybor.odrzuc_wszystkie
                 else f"Tam: {wybor.id_tam}; Powrót: {wybor.id_powrot}",
                 uzasadnienie=f"Osoba: {k.dane['id_osoby']}; kryterium: {wybor.kryterium}; "
+                + f"zgoda na zmianę transportu: {wybor.zgoda_na_zmiane_transportu}; "
                 + (wybor.uzasadnienie or "Zaakceptowano rekomendację"),
             )
         )

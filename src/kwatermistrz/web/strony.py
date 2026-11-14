@@ -33,6 +33,7 @@ from ..api.zaleznosci import dostep_do_podrozy, get_broker, get_sesja, sprawdz_c
 from ..config import settings
 from ..db import teraz
 from ..messaging import Broker, Komunikat, Typ
+from ..miejscowosci import BladMiejscowosci, ZrodloNiedostepne, szukaj_miejscowosci
 from ..models import (
     Agent,
     Delegacja,
@@ -50,6 +51,7 @@ from ..models import (
 )
 from ..podroze import (
     KRYTERIA,
+    SRODKI_TRANSPORTU,
     Kryterium,
     WariantPodrozyIn,
     WyborPodrozy,
@@ -118,6 +120,22 @@ def biezacy_uzytkownik(request: Request, s: Session = Depends(get_sesja)) -> Zol
     if uzytkownik is None:
         raise HTTPException(303, headers={"Location": "/app/logowanie"})
     return uzytkownik
+
+
+@router.get("/miejscowosci", response_class=HTMLResponse)
+def wyszukaj_miejscowosci(
+    request: Request,
+    miejsce_docelowe: str = "",
+    uzytkownik: Zolnierz = Depends(biezacy_uzytkownik),
+):
+    wyniki, blad = [], ""
+    try:
+        wyniki = szukaj_miejscowosci(miejsce_docelowe)
+    except (BladMiejscowosci, ZrodloNiedostepne) as e:
+        blad = str(e)
+    return szablony.TemplateResponse(
+        request=request, name="miejscowosci.html", context={"wyniki": wyniki, "blad": blad}
+    )
 
 
 def liczba_do_zatwierdzenia(s: Session, uzytkownik: Zolnierz) -> int:
@@ -232,6 +250,7 @@ def widok_podrozy(
         dane_oferty=dane_oferty or {"klucz": str(uuid4())},
         dane_wyboru=dane_wyboru or {},
         oferta_zapisana=oferta and any(w["id_polaczenia"] == oferta for w in dane["warianty"]),
+        srodki_transportu=SRODKI_TRANSPORTU,
     )
     odpowiedz.status_code = status
     return odpowiedz
@@ -306,6 +325,7 @@ async def wybierz_podroz(
     id_powrot: str = Form(""),
     akcja: str = Form("wybierz"),
     kryterium: Annotated[Kryterium, Form()] = "standardowe",
+    zgoda_na_zmiane_transportu: Annotated[bool, Form()] = False,
     uzasadnienie: str = Form(""),
     csrf: str = Form(""),
     s: Session = Depends(get_sesja),
@@ -322,6 +342,7 @@ async def wybierz_podroz(
             id_powrot=(id_powrot or None) if akcja == "wybierz" else None,
             odrzuc_wszystkie=akcja == "odrzuc",
             kryterium=kryterium,
+            zgoda_na_zmiane_transportu=zgoda_na_zmiane_transportu,
             uzasadnienie=uzasadnienie,
         )
         await przyjmij_wybor(s, broker, id_delegacji, uzytkownik, dane)
@@ -338,7 +359,12 @@ async def wybierz_podroz(
             blad=str(e.detail)
             if isinstance(e, HTTPException)
             else "Wybierz oba przejazdy. Przy odrzuceniu wszystkich wariantów podaj uzasadnienie.",
-            dane_wyboru={"id_tam": id_tam, "id_powrot": id_powrot, "uzasadnienie": uzasadnienie},
+            dane_wyboru={
+                "id_tam": id_tam,
+                "id_powrot": id_powrot,
+                "uzasadnienie": uzasadnienie,
+                "zgoda_na_zmiane_transportu": zgoda_na_zmiane_transportu,
+            },
         )
     return RedirectResponse(f"/app/wnioski/{id_delegacji}/podroz?przekazano=true", status_code=303)
 
@@ -370,7 +396,13 @@ def nowy_wniosek(request: Request, s: Session = Depends(get_sesja), uzytkownik: 
         }
     )
     return strona(
-        request, s, "nowy_wniosek.html", uzytkownik, przedsiewziecia=przedsiewziecia, miasta_ofert=miasta_ofert
+        request,
+        s,
+        "nowy_wniosek.html",
+        uzytkownik,
+        przedsiewziecia=przedsiewziecia,
+        miasta_ofert=miasta_ofert,
+        srodki_transportu=SRODKI_TRANSPORTU,
     )
 
 

@@ -13,6 +13,8 @@ class Settings(BaseSettings):
     amqp_url: str = "amqp://guest:guest@localhost:5672/"
     exchange: str = "kwatermistrz"
     polacz_broker: bool = True
+    # Publiczne API dla niewielkiego ruchu. Przy większym ruchu ustaw własną instancję Photon.
+    photon_url: str = "https://photon.komoot.io/api/"
     # W Azure ustaw SESSION_SECRET, aby sesje przetrwały restart i działały między replikami.
     session_secret: SecretStr = Field(default_factory=lambda: SecretStr(token_hex(32)))
 
