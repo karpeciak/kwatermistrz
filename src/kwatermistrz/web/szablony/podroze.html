@@ -1,0 +1,28 @@
+{% extends "baza.html" %}
+{% block tytul %}Podróże{% endblock %}
+{% block tresc %}
+<h2>Podróże</h2>
+<p>Wybierz zatwierdzony wniosek, aby porównać przejazdy lub zobaczyć zapisany wybór.
+  Widzisz swoje podróże oraz podróże, które akceptujesz.</p>
+{% if wnioski %}
+<div class="overflow-auto"><table>
+  <thead><tr><th>Wniosek</th><th>Delegowany</th><th>Cel / miejsce</th><th>Termin</th><th>Status</th><th>Przejazdy</th></tr></thead>
+  <tbody>
+  {% for d in wnioski %}
+  {% set osoba = wnioskodawcy[d.id_zolnierza] %}
+  <tr>
+    <td><a href="/app/wnioski/{{ d.id_delegacji }}">{{ d.id_delegacji }}</a></td>
+    <td>{{ osoba.stopien }} {{ osoba.imie_nazwisko }}</td>
+    <td>{{ d.cel_wyjazdu or "-" }}<br>{{ d.miejsce_docelowe or "-" }}</td>
+    <td>{{ d.data_wyjazdu }} — {{ d.data_powrotu }}</td>
+    <td>{{ d.status }}</td>
+    <td><a href="/app/wnioski/{{ d.id_delegacji }}/podroz">Porównaj / zobacz wybór</a></td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table></div>
+{% else %}
+<p>Nie ma jeszcze zatwierdzonych podróży dostępnych dla Ciebie.</p>
+<p><a href="/app/pulpit">Moje wnioski</a> · <a href="/app/do-zatwierdzenia">Wnioski do zatwierdzenia</a></p>
+{% endif %}
+{% endblock %}

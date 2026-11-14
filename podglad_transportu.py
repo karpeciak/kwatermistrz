@@ -1,65 +1,48 @@
-r"""Lokalny podgląd S22IT1S0P2-27 bez PostgreSQL i RabbitMQ.
+r"""Lokalne uruchomienie aplikacji ze wszystkimi agentami z repozytorium.
 
 Uruchom: .venv\Scripts\python podglad_transportu.py
-Każde uruchomienie tworzy osobną, tymczasową bazę z dwiema delegacjami demo.
-Komunikaty transportu są dostarczane w pamięci do rzeczywistego agenta.
+Dane są zachowywane w osobnej bazie SQLite podglad-lokalny.db.
+Wiadomości wszystkich agentów są dostarczane w pamięci. Można tworzyć własne wnioski.
 """
 
+import asyncio
 import os
-import tempfile
 from contextlib import asynccontextmanager
 from datetime import date, time
 from pathlib import Path
 
-BAZA_DEMO = Path(tempfile.mkdtemp(prefix="kwatermistrz-podglad-")) / "podglad.db"
+BAZA_DEMO = Path(__file__).resolve().parent / "podglad-lokalny.db"
 os.environ["DATABASE_URL"] = f"sqlite:///{BAZA_DEMO.as_posix()}"
 os.environ["POLACZ_BROKER"] = "false"
 
 import uvicorn  # noqa: E402
-from fastapi import HTTPException  # noqa: E402
 
-from kwatermistrz.agents.transport import AgentTransportu  # noqa: E402
 from kwatermistrz.api.main import app  # noqa: E402
 from kwatermistrz.db import sesja, teraz  # noqa: E402
+from kwatermistrz.lokalnie import BrokerLokalny  # noqa: E402
 from kwatermistrz.messaging import Komunikat, Typ  # noqa: E402
 from kwatermistrz.models import Delegacja, Przedsiewziecie, Status  # noqa: E402
 
 DELEGACJE = ("DEMO-TRANSPORT", "DEMO-ODRZUCENIE")
 
 
-class BrokerPodgladu:
-    """Atrapa transportu wiadomości wyłącznie do lokalnego podglądu."""
-
-    def __init__(self):
-        self.agent = AgentTransportu(self)
-
-    async def publikuj(self, k: Komunikat):
-        obsluga = self.agent.obslugi().get(k.typ)
-        if obsluga:
-            wynik = await self.agent.wykonaj(k, *obsluga)
-            if wynik.wynik == "Błąd":
-                raise HTTPException(409, wynik.opis)
-        elif k.typ not in (Typ.POWIADOMIENIE, Typ.WYNIK_TRANSPORTU):
-            raise HTTPException(503, "Podgląd obejmuje wybór podróży. Pozostałe procesy wymagają pełnego systemu.")
-
-    async def do_kolejki(self, kolejka: str, k: Komunikat):
-        raise RuntimeError("Błąd obsługi podglądu — sprawdź log w terminalu")
-
-
 def utworz_dane_demo():
     with sesja() as s:
-        s.add(
-            Przedsiewziecie(
-                id_przedsiewziecia="PRZ-PODGLAD",
-                nazwa="Szkolenie demonstracyjne transportu",
-                miejscowosc="Toruń",
-                data_rozpoczecia=date(2026, 12, 7),
-                data_zakonczenia=date(2026, 12, 11),
-                godzina_rozpoczecia=time(9),
+        if s.get(Przedsiewziecie, "PRZ-PODGLAD") is None:
+            s.add(
+                Przedsiewziecie(
+                    id_przedsiewziecia="PRZ-PODGLAD",
+                    nazwa="Szkolenie demonstracyjne transportu",
+                    miejscowosc="Toruń",
+                    data_rozpoczecia=date(2026, 12, 7),
+                    data_zakonczenia=date(2026, 12, 11),
+                    godzina_rozpoczecia=time(9),
+                )
             )
-        )
         s.flush()
         for identyfikator in DELEGACJE:
+            if s.get(Delegacja, identyfikator) is not None:
+                continue
             s.add(
                 Delegacja(
                     id_delegacji=identyfikator,
@@ -92,15 +75,21 @@ zwykly_start = app.router.lifespan_context
 async def start_podgladu(aplikacja):
     async with zwykly_start(aplikacja):
         utworz_dane_demo()
-        broker = BrokerPodgladu()
+        broker = BrokerLokalny()
         aplikacja.state.broker = broker
         for identyfikator in DELEGACJE:
             await broker.publikuj(Komunikat(typ=Typ.ZADANIE_TRANSPORTU, id_delegacji=identyfikator))
-        print("\nZaloguj się jako ZOL-001: http://127.0.0.1:8000/app/logowanie")
-        for identyfikator in DELEGACJE:
-            print(f"Podgląd: http://127.0.0.1:8000/app/wnioski/{identyfikator}/podroz")
-        print("Osobna baza tymczasowa; tylko transport. Restart przywraca świeże dane. Ctrl+C kończy podgląd.\n")
-        yield
+        zadania = [asyncio.create_task(a.petla_cykliczna()) for a in broker.agenci if a.interwal_cyklu]
+        print("\nAplikacja: http://127.0.0.1:8000/app/logowanie")
+        print("Wnioskodawca: ZOL-003. Przełożony: ZOL-001. Lista podróży: /app/podroze")
+        print("Możesz tworzyć własne wnioski. Dostępne jest też szkolenie PRZ-PODGLAD (9:00).")
+        print("Wszyscy agenci z repozytorium; SQLite i wiadomości w pamięci. Ctrl+C kończy serwer.\n")
+        try:
+            yield
+        finally:
+            for zadanie in zadania:
+                zadanie.cancel()
+            await asyncio.gather(*zadania, return_exceptions=True)
 
 
 app.router.lifespan_context = start_podgladu

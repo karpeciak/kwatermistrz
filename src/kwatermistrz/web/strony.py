@@ -23,6 +23,7 @@ from pydantic import ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from ..agents.koordynator import brakujace_elementy_organizacji
 from ..api.organizacja import przyjmij_wybor
 from ..api.rozliczenia import KOMUNIKAT_PRZYJETY, DokumentKosztowyIn, przyjmij_dokument
 from ..api.schemas import WniosekIn
@@ -38,8 +39,10 @@ from ..models import (
     LogDecyzji,
     LogOperacji,
     Przedsiewziecie,
+    Przejazd,
     Rozliczenie,
     Status,
+    StatusRezerwacji,
     Zolnierz,
 )
 from ..podroze import KRYTERIA, Kryterium, WyborPodrozy, zestawienie
@@ -48,8 +51,9 @@ from ..sesje import CIASTECZKO, CZAS_SESJI, odczytaj_sesje, token_csrf, utworz_s
 KATALOG = Path(__file__).parent
 STREFA = ZoneInfo("Europe/Warsaw")
 
-# Etapy, na których pracują agenci – strona wniosku odświeża się wtedy sama
+# Sam status nie potwierdza pracy agenta. Krótkie odpytywanie służy oczekiwaniu na odpowiedź.
 ETAPY_W_TOKU = {Status.ZLOZONY, Status.ZATWIERDZONY}
+ETAPY_PODROZY = (Status.ZATWIERDZONY, Status.ZORGANIZOWANY, Status.W_TRAKCIE, Status.DO_ROZLICZENIA, Status.ROZLICZONY)
 WYNIK_DOKUMENT_PRZYJETY = "dokument-przyjety"
 
 szablony = Jinja2Templates(directory=KATALOG / "szablony")
@@ -159,6 +163,31 @@ def wyloguj(request: Request, csrf: str = Form("")):
 
 
 # ---------------------------------------------------------------- transport S22IT1S0P2-27, -57
+
+
+@router.get("/podroze", response_class=HTMLResponse)
+def lista_podrozy(
+    request: Request,
+    s: Session = Depends(get_sesja),
+    uzytkownik: Zolnierz = Depends(biezacy_uzytkownik),
+):
+    wnioski = s.scalars(
+        select(Delegacja)
+        .where(
+            Delegacja.status.in_(ETAPY_PODROZY),
+            (Delegacja.id_zolnierza == uzytkownik.id_zolnierza)
+            | (Delegacja.id_zatwierdzajacego == uzytkownik.id_zolnierza),
+        )
+        .order_by(Delegacja.data_zmiany_statusu.desc(), Delegacja.id_delegacji)
+    ).all()
+    return strona(
+        request,
+        s,
+        "podroze.html",
+        uzytkownik,
+        wnioski=wnioski,
+        wnioskodawcy={z.id_zolnierza: z for z in s.scalars(select(Zolnierz))},
+    )
 
 
 @router.get("/wnioski/{id_delegacji}/podroz", response_class=HTMLResponse)
@@ -292,6 +321,35 @@ def dane_wniosku(s: Session, id_delegacji: str, uzytkownik: Zolnierz) -> dict:
         ]
         if walidacje and walidacje[-1].wybrany_wariant == "Do poprawy":
             bledy = walidacje[-1].uzasadnienie.split("; ")
+    oczekiwanie = None
+    odswiezaj = d.status in ETAPY_W_TOKU and (teraz() - d.data_zmiany_statusu).total_seconds() < 60
+    if d.status == Status.ZLOZONY:
+        oczekiwanie = "Oczekiwanie na obsługę wniosku."
+    elif d.status == Status.W_AKCEPTACJI:
+        oczekiwanie = "Wniosek oczekuje na decyzję przełożonego."
+    elif d.status == Status.ZATWIERDZONY:
+        warianty = list(s.scalars(select(Przejazd).where(Przejazd.id_delegacji == id_delegacji)))
+        wynik_transportu = any(o.id_agenta == "AG-04" for o in operacje)
+        if any(r.status == StatusRezerwacji.DO_UZGODNIENIA for r in warianty):
+            oczekiwanie = "Podróż wymaga dodatkowego uzgodnienia — odrzucono propozycje przejazdu."
+            odswiezaj = False
+        elif {"Tam", "Powrót"} <= {r.kierunek for r in warianty if r.status == StatusRezerwacji.WYBRANA}:
+            brakujace = brakujace_elementy_organizacji(s, d)
+            oczekiwanie = "Transport został wybrany."
+            if brakujace:
+                oczekiwanie += " Organizacja oczekuje na: " + ", ".join(brakujace) + "."
+            odswiezaj = False
+        elif warianty or wynik_transportu:
+            porownanie = zestawienie(s, d)
+            if porownanie["brak_kierunkow"] or not any(
+                w["kierunek"] == "Tam" and not w["spozniony"] for w in porownanie["warianty"]
+            ):
+                oczekiwanie = "Brak kompletu odpowiednich przejazdów. Podróż wymaga uzgodnienia."
+            else:
+                oczekiwanie = "Warianty są przygotowane. Oczekiwanie na wybór podróży przez osobę akceptującą."
+            odswiezaj = False
+        else:
+            oczekiwanie = "Oczekiwanie na przygotowanie wariantów podróży."
     return dict(
         d=d,
         wnioskodawca=s.get(Zolnierz, d.id_zolnierza),
@@ -301,7 +359,8 @@ def dane_wniosku(s: Session, id_delegacji: str, uzytkownik: Zolnierz) -> dict:
         decyzje=decyzje,
         agenci={a.id_agenta: a.nazwa for a in s.scalars(select(Agent))},
         bledy=bledy,
-        w_toku=d.status in ETAPY_W_TOKU,
+        w_toku=odswiezaj,
+        oczekiwanie=oczekiwanie,
     )
 
 
@@ -323,7 +382,9 @@ def stan_wniosku(
     uzytkownik: Zolnierz = Depends(biezacy_uzytkownik),
 ):
     """Fragment strony odświeżany przez HTMX, dopóki agenci pracują nad wnioskiem."""
-    return szablony.TemplateResponse(request, "_stan_wniosku.html", dane_wniosku(s, id_delegacji, uzytkownik))
+    return szablony.TemplateResponse(
+        request, "_stan_wniosku.html", {**dane_wniosku(s, id_delegacji, uzytkownik), "uzytkownik": uzytkownik}
+    )
 
 
 # ---------------------------------------------------------------- rozliczenie

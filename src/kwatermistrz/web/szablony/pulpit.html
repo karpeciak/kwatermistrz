@@ -15,7 +15,7 @@
 <div class="overflow-auto">
 <table>
   <thead>
-    <tr><th>Numer</th><th>Cel</th><th>Miejsce</th><th>Termin</th><th>Status</th><th>Od</th></tr>
+    <tr><th>Numer</th><th>Cel</th><th>Miejsce</th><th>Termin</th><th>Status</th><th>Od</th><th>Podróż</th></tr>
   </thead>
   <tbody>
     {% for d in wnioski %}
@@ -27,6 +27,7 @@
       <td><span class="bez-lamania">{{ w.get("data_wyjazdu") | data_pl }} – {{ w.get("data_powrotu") | data_pl }}</span></td>
       <td><span class="status {{ d.status | klasa_statusu }}">{{ d.status }}</span></td>
       <td>{{ d.data_zmiany_statusu | ile_czasu }} temu</td>
+      <td>{% if d.status in ["zatwierdzony", "zorganizowany", "w trakcie", "do rozliczenia", "rozliczony"] %}<a href="/app/wnioski/{{ d.id_delegacji }}/podroz">Porównaj / zobacz wybór</a>{% else %}Po zatwierdzeniu{% endif %}</td>
     </tr>
     {% endfor %}
   </tbody>

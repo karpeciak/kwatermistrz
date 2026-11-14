@@ -8,12 +8,13 @@
   </div>
 
   <article>
-    <header><strong>Bieżący etap</strong>{% if w_toku %} <span aria-busy="true">agenci pracują nad wnioskiem</span>{% endif %}</header>
+    <header><strong>Bieżący etap</strong></header>
+    {% if oczekiwanie %}<p role="status">{{ oczekiwanie }}</p>{% endif %}
     <div class="grid">
       <div><small>Status</small><p>{{ d.status }}</p></div>
       <div><small>Na tym etapie od</small><p>{{ d.data_zmiany_statusu | czas }} ({{ d.data_zmiany_statusu | ile_czasu }})</p></div>
       <div><small>Osoba odpowiedzialna</small>
-        <p>{% if zatwierdzajacy and d.status == "w akceptacji" %}{{ zatwierdzajacy.stopien }} {{ zatwierdzajacy.imie_nazwisko }}, {{ zatwierdzajacy.funkcja }}{% else %}–{% endif %}</p>
+        <p>{% if zatwierdzajacy and d.status in ["w akceptacji", "zatwierdzony"] %}{{ zatwierdzajacy.stopien }} {{ zatwierdzajacy.imie_nazwisko }}, {{ zatwierdzajacy.funkcja }}{% else %}-{% endif %}</p>
       </div>
     </div>
     {% if d.status == "do rozliczenia" and uzytkownik.id_zolnierza == d.id_zolnierza %}
