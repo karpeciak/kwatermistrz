@@ -81,6 +81,13 @@ fieldset.decyzja-zbiorcza button { width: auto; margin: 0; }
 .historia small { color: var(--pico-muted-color); margin-left: 0.4rem; }
 .decyzja-agenta { margin-top: 0.2rem; font-size: 0.9em; }
 
+/* Formularz rozliczenia (S22IT1S0P2-60) */
+.ponad-limit { display: inline-block; padding: 0 0.5em; border-radius: 1em; font-size: 0.8em;
+  background: #fee2e2; color: #7f1d1d; }
+table.wyliczenie td { text-align: right; white-space: nowrap; }
+table.wyliczenie tr.razem th,
+table.wyliczenie tr.razem td { font-weight: 700; border-top: 2px solid var(--pico-muted-border-color); }
+
 form.decyzja { margin-bottom: 0; }
 form.decyzja input { margin-bottom: 0.4rem; }
 

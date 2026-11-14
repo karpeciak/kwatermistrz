@@ -418,7 +418,7 @@ def rozliczenie(
     s: Session = Depends(get_sesja),
     uzytkownik: Zolnierz = Depends(biezacy_uzytkownik),
 ):
-    komunikat = KOMUNIKAT_PRZYJETY if wynik == WYNIK_DOKUMENT_PRZYJETY else None
+    komunikat = {WYNIK_DOKUMENT_PRZYJETY: KOMUNIKAT_PRZYJETY, WYNIK_PODROZ_ZAPISANA: KOMUNIKAT_PODROZ}.get(wynik)
     return strona(
         request,
         s,
@@ -427,6 +427,61 @@ def rozliczenie(
         **dane_rozliczenia(s, id_delegacji, uzytkownik),
         komunikat=komunikat,
     )
+
+
+WYNIK_PODROZ_ZAPISANA = "podroz-zapisana"
+KOMUNIKAT_PODROZ = "Zapisano faktyczny czas podróży i zapewnione świadczenia."
+
+
+def _liczba_posilkow(tekst: str) -> int | None:
+    try:
+        liczba = int(tekst or 0)
+    except ValueError:
+        return None
+    return liczba if liczba >= 0 else None
+
+
+@router.post("/wnioski/{id_delegacji}/rozliczenie/podroz", response_class=HTMLResponse)
+def zapisz_podroz_w_interfejsie(
+    id_delegacji: str,
+    request: Request,
+    faktyczny_wyjazd: str = Form(""),
+    faktyczny_powrot: str = Form(""),
+    sniadania: str = Form("0"),
+    obiady: str = Form("0"),
+    kolacje: str = Form("0"),
+    bezplatne_zakwaterowanie: bool = Form(False),
+    s: Session = Depends(get_sesja),
+    uzytkownik: Zolnierz = Depends(biezacy_uzytkownik),
+):
+    """S22IT1S0P2-60: faktyczny czas podróży i zapewnione świadczenia w rozliczeniu delegacji."""
+    kontekst = dane_rozliczenia(s, id_delegacji, uzytkownik)
+    try:
+        wyjazd, powrot = datetime.fromisoformat(faktyczny_wyjazd), datetime.fromisoformat(faktyczny_powrot)
+    except ValueError:
+        wyjazd = powrot = None
+    posilki = {"śniadanie": sniadania, "obiad": obiady, "kolacja": kolacje}
+    liczby = {posilek: _liczba_posilkow(tekst) for posilek, tekst in posilki.items()}
+    komunikat = None
+    if wyjazd is None or powrot is None:
+        komunikat = "Podaj datę i godzinę wyjazdu oraz powrotu."
+    elif powrot <= wyjazd:
+        komunikat = "Powrót musi nastąpić po wyjeździe."
+    elif None in liczby.values():
+        komunikat = "Liczba posiłków musi być liczbą całkowitą, nie mniejszą niż 0."
+    if komunikat:
+        return strona(request, s, "rozliczenie.html", uzytkownik, **kontekst, komunikat=komunikat, blad=True)
+
+    rozliczenie = kontekst["rozliczenie"]
+    if rozliczenie is None:
+        rozliczenie = Rozliczenie(id_delegacji=id_delegacji)
+        s.add(rozliczenie)
+    rozliczenie.faktyczny_wyjazd = wyjazd
+    rozliczenie.faktyczny_powrot = powrot
+    rozliczenie.zapewnione_posilki = {posilek: liczba for posilek, liczba in liczby.items() if liczba}
+    rozliczenie.bezplatne_zakwaterowanie = bezplatne_zakwaterowanie
+    s.commit()
+    return RedirectResponse(f"/app/wnioski/{id_delegacji}/rozliczenie?wynik={WYNIK_PODROZ_ZAPISANA}", status_code=303)
 
 
 @router.post("/wnioski/{id_delegacji}/rozliczenie/dokumenty", response_class=HTMLResponse)
