@@ -23,7 +23,16 @@ from pydantic import ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from ..api.rozliczenia import KOMUNIKAT_PRZYJETY, DokumentKosztowyIn, przyjmij_dokument
+from ..api.rozliczenia import (
+    KOMUNIKAT_PRZYJETY,
+    KOMUNIKAT_ZATWIERDZONE,
+    DokumentKosztowyIn,
+    mozna_edytowac,
+    przyjmij_dokument,
+    zapisz_podroz,
+    zatwierdz_wyliczenie,
+    zlec_wyliczenie,
+)
 from ..api.schemas import WniosekIn
 from ..api.wnioski import zarejestruj_wniosek
 from ..api.zaleznosci import get_broker, get_sesja
@@ -418,7 +427,11 @@ def rozliczenie(
     s: Session = Depends(get_sesja),
     uzytkownik: Zolnierz = Depends(biezacy_uzytkownik),
 ):
-    komunikat = {WYNIK_DOKUMENT_PRZYJETY: KOMUNIKAT_PRZYJETY, WYNIK_PODROZ_ZAPISANA: KOMUNIKAT_PODROZ}.get(wynik)
+    komunikat = {
+        WYNIK_DOKUMENT_PRZYJETY: KOMUNIKAT_PRZYJETY,
+        WYNIK_PODROZ_ZAPISANA: KOMUNIKAT_PODROZ,
+        WYNIK_ZATWIERDZONO: KOMUNIKAT_ZATWIERDZONO,
+    }.get(wynik)
     return strona(
         request,
         s,
@@ -442,7 +455,7 @@ def _liczba_posilkow(tekst: str) -> int | None:
 
 
 @router.post("/wnioski/{id_delegacji}/rozliczenie/podroz", response_class=HTMLResponse)
-def zapisz_podroz_w_interfejsie(
+async def zapisz_podroz_w_interfejsie(
     id_delegacji: str,
     request: Request,
     faktyczny_wyjazd: str = Form(""),
@@ -452,9 +465,10 @@ def zapisz_podroz_w_interfejsie(
     kolacje: str = Form("0"),
     bezplatne_zakwaterowanie: bool = Form(False),
     s: Session = Depends(get_sesja),
+    broker: Broker = Depends(get_broker),
     uzytkownik: Zolnierz = Depends(biezacy_uzytkownik),
 ):
-    """S22IT1S0P2-60: faktyczny czas podróży i zapewnione świadczenia w rozliczeniu delegacji."""
+    """S22IT1S0P2-60, -61: czas podróży i świadczenia → wyliczenie należności przez Agenta Rozliczeń."""
     kontekst = dane_rozliczenia(s, id_delegacji, uzytkownik)
     try:
         wyjazd, powrot = datetime.fromisoformat(faktyczny_wyjazd), datetime.fromisoformat(faktyczny_powrot)
@@ -463,7 +477,9 @@ def zapisz_podroz_w_interfejsie(
     posilki = {"śniadanie": sniadania, "obiad": obiady, "kolacja": kolacje}
     liczby = {posilek: _liczba_posilkow(tekst) for posilek, tekst in posilki.items()}
     komunikat = None
-    if wyjazd is None or powrot is None:
+    if not mozna_edytowac(kontekst["rozliczenie"]):
+        komunikat = KOMUNIKAT_ZATWIERDZONE
+    elif wyjazd is None or powrot is None:
         komunikat = "Podaj datę i godzinę wyjazdu oraz powrotu."
     elif powrot <= wyjazd:
         komunikat = "Powrót musi nastąpić po wyjeździe."
@@ -472,20 +488,34 @@ def zapisz_podroz_w_interfejsie(
     if komunikat:
         return strona(request, s, "rozliczenie.html", uzytkownik, **kontekst, komunikat=komunikat, blad=True)
 
-    rozliczenie = kontekst["rozliczenie"]
-    if rozliczenie is None:
-        rozliczenie = Rozliczenie(id_delegacji=id_delegacji)
-        s.add(rozliczenie)
-    rozliczenie.faktyczny_wyjazd = wyjazd
-    rozliczenie.faktyczny_powrot = powrot
-    rozliczenie.zapewnione_posilki = {posilek: liczba for posilek, liczba in liczby.items() if liczba}
-    rozliczenie.bezplatne_zakwaterowanie = bezplatne_zakwaterowanie
-    s.commit()
+    zapisz_podroz(s, kontekst["d"], wyjazd, powrot, liczby, bezplatne_zakwaterowanie)
+    await zlec_wyliczenie(s, broker, kontekst["d"])
     return RedirectResponse(f"/app/wnioski/{id_delegacji}/rozliczenie?wynik={WYNIK_PODROZ_ZAPISANA}", status_code=303)
 
 
+WYNIK_ZATWIERDZONO = "wyliczenie-zatwierdzone"
+KOMUNIKAT_ZATWIERDZONO = "Wyliczenie zatwierdzone – rozliczenie przekazano do weryfikacji."
+
+
+@router.post("/wnioski/{id_delegacji}/rozliczenie/zatwierdzenie", response_class=HTMLResponse)
+async def zatwierdz_wyliczenie_w_interfejsie(
+    id_delegacji: str,
+    request: Request,
+    s: Session = Depends(get_sesja),
+    broker: Broker = Depends(get_broker),
+    uzytkownik: Zolnierz = Depends(biezacy_uzytkownik),
+):
+    """S22IT1S0P2-36: delegowany zatwierdza wyliczenie należności – rozliczenie gotowe do weryfikacji."""
+    kontekst = dane_rozliczenia(s, id_delegacji, uzytkownik)
+    komunikat = await zatwierdz_wyliczenie(s, broker, kontekst["d"])
+    if komunikat:
+        kontekst = dane_rozliczenia(s, id_delegacji, uzytkownik)
+        return strona(request, s, "rozliczenie.html", uzytkownik, **kontekst, komunikat=komunikat, blad=True)
+    return RedirectResponse(f"/app/wnioski/{id_delegacji}/rozliczenie?wynik={WYNIK_ZATWIERDZONO}", status_code=303)
+
+
 @router.post("/wnioski/{id_delegacji}/rozliczenie/dokumenty", response_class=HTMLResponse)
-def dodaj_dokument_w_interfejsie(
+async def dodaj_dokument_w_interfejsie(
     id_delegacji: str,
     request: Request,
     rodzaj: str = Form(...),
@@ -493,6 +523,7 @@ def dodaj_dokument_w_interfejsie(
     data: str = Form(...),
     kwota: str = Form(...),
     s: Session = Depends(get_sesja),
+    broker: Broker = Depends(get_broker),
     uzytkownik: Zolnierz = Depends(biezacy_uzytkownik),
 ):
     kontekst = dane_rozliczenia(s, id_delegacji, uzytkownik)
@@ -510,6 +541,7 @@ def dodaj_dokument_w_interfejsie(
         )
     wynik = przyjmij_dokument(s, kontekst["d"], dane)
     if wynik.przyjeto:
+        await zlec_wyliczenie(s, broker, kontekst["d"])
         return RedirectResponse(
             f"/app/wnioski/{id_delegacji}/rozliczenie?wynik={WYNIK_DOKUMENT_PRZYJETY}", status_code=303
         )
