@@ -50,6 +50,16 @@ footer.container { margin-top: 2rem; color: var(--pico-muted-color); }
 .bledy ul { margin-bottom: 0; }
 .blad { color: #b91c1c; }
 
+/* Zbiorcze zatwierdzanie (S22IT1S0P2-35) */
+.budzet .grid p { margin-bottom: 0; font-size: 1.1em; }
+.budzet .komunikat { margin: 1rem 0 0; }
+td.kwota { white-space: nowrap; text-align: right; }
+.wstrzymany { display: block; margin-bottom: 0.4rem; color: #b45309; font-weight: 600; }
+fieldset.decyzja-zbiorcza { margin-top: 1rem; padding: 1rem; border: 1px solid var(--pico-muted-border-color);
+  border-radius: var(--pico-border-radius); }
+fieldset.decyzja-zbiorcza .przyciski { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+fieldset.decyzja-zbiorcza button { width: auto; margin: 0; }
+
 /* Historia obsługi – log agentów */
 .historia { list-style: none; padding-left: 0; }
 .historia li { position: relative; padding: 0.4rem 0 0.4rem 1.2rem; border-left: 2px solid var(--pico-muted-border-color); }
