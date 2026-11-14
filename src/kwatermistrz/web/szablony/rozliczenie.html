@@ -12,50 +12,106 @@
 <p class="{{ 'bledy' if blad else 'komunikat' }}" role="{{ 'alert' if blad else 'status' }}">{{ komunikat }}</p>
 {% endif %}
 
+{# S22IT1S0P2-60: formularz rozliczenia – czas podróży, zapewnione świadczenia, dokumenty kosztowe, wyliczenie #}
+{% set r = rozliczenie %}
+{% set posilki = (r.zapewnione_posilki if r else None) or {} %}
 <article>
-  <header><strong>Dodaj dokument kosztowy</strong></header>
-  <p><small>Wszystkie pola są wymagane.</small></p>
+  <header><strong>1. Faktyczny czas podróży i zapewnione świadczenia</strong></header>
+  <form method="post" action="/app/wnioski/{{ d.id_delegacji }}/rozliczenie/podroz">
+    <div class="grid">
+      <label for="faktyczny_wyjazd">Wyjazd – data i godzina *
+        <input id="faktyczny_wyjazd" name="faktyczny_wyjazd" type="datetime-local" required
+               value="{{ r.faktyczny_wyjazd.strftime('%Y-%m-%dT%H:%M') if r and r.faktyczny_wyjazd else '' }}">
+      </label>
+      <label for="faktyczny_powrot">Powrót – data i godzina *
+        <input id="faktyczny_powrot" name="faktyczny_powrot" type="datetime-local" required
+               value="{{ r.faktyczny_powrot.strftime('%Y-%m-%dT%H:%M') if r and r.faktyczny_powrot else '' }}">
+      </label>
+    </div>
+    <fieldset>
+      <legend>Posiłki zapewnione bezpłatnie <small>(liczba w całej delegacji)</small></legend>
+      <div class="grid">
+        <label>Śniadania <input name="sniadania" type="number" min="0" step="1" value="{{ posilki.get('śniadanie', 0) }}"></label>
+        <label>Obiady <input name="obiady" type="number" min="0" step="1" value="{{ posilki.get('obiad', 0) }}"></label>
+        <label>Kolacje <input name="kolacje" type="number" min="0" step="1" value="{{ posilki.get('kolacja', 0) }}"></label>
+      </div>
+    </fieldset>
+    <label>
+      <input type="checkbox" name="bezplatne_zakwaterowanie" value="true"
+             {% if r and r.bezplatne_zakwaterowanie %}checked{% endif %}>
+      Zapewniono mi bezpłatne zakwaterowanie
+    </label>
+    <button type="submit">Zapisz czas podróży i świadczenia</button>
+  </form>
+</article>
+
+<article>
+  <header><strong>2. Dokumenty kosztowe</strong></header>
   <form method="post" action="/app/wnioski/{{ d.id_delegacji }}/rozliczenie/dokumenty">
     <div class="grid">
-      <label for="rodzaj">Rodzaj dokumentu
-        <input id="rodzaj" name="rodzaj" type="text" maxlength="30" required placeholder="np. bilet">
+      <label for="rodzaj">Rodzaj dokumentu *
+        <select id="rodzaj" name="rodzaj" required>
+          {% for rodzaj in ("bilet", "rachunek za nocleg", "faktura", "inny") %}<option value="{{ rodzaj }}">{{ rodzaj }}</option>{% endfor %}
+        </select>
       </label>
-      <label for="numer">Numer dokumentu
+      <label for="numer">Numer dokumentu *
         <input id="numer" name="numer" type="text" maxlength="60" required>
       </label>
     </div>
     <div class="grid">
-      <label for="data">Data dokumentu
+      <label for="data">Data dokumentu *
         <input id="data" name="data" type="date" required>
       </label>
-      <label for="kwota">Kwota (zł)
+      <label for="kwota">Kwota (zł) *
         <input id="kwota" name="kwota" type="number" min="0.01" step="0.01" inputmode="decimal" required>
       </label>
     </div>
     <button type="submit">Dodaj dokument</button>
   </form>
-</article>
 
-<article>
-  <header><strong>Dokumenty w bieżącym rozliczeniu</strong></header>
   {% if dokumenty %}
   <div class="overflow-auto">
     <table>
-      <thead><tr><th scope="col">Rodzaj</th><th scope="col">Numer</th><th scope="col">Data</th><th scope="col">Kwota</th></tr></thead>
+      <thead><tr><th scope="col">Rodzaj</th><th scope="col">Numer</th><th scope="col">Data</th><th scope="col">Kwota</th><th scope="col">Uznano</th></tr></thead>
       <tbody>
-      {% for dokument in dokumenty %}
+        {% for dokument in dokumenty %}
         <tr>
           <td>{{ dokument.rodzaj }}</td>
           <td>{{ dokument.numer }}</td>
           <td>{{ dokument.data | data_pl }}</td>
           <td class="bez-lamania">{{ "%.2f" | format(dokument.kwota) }} zł</td>
+          <td class="bez-lamania">
+            {% if dokument.kwota_uznana is not none %}{{ "%.2f" | format(dokument.kwota_uznana) }} zł{% else %}–{% endif %}
+            {% if dokument.przekracza_limit %}<br><span class="ponad-limit">ponad limit</span>{% endif %}
+          </td>
         </tr>
-      {% endfor %}
+        {% endfor %}
       </tbody>
     </table>
   </div>
   {% else %}
   <p>Nie dodano jeszcze żadnych dokumentów kosztowych.</p>
+  {% endif %}
+</article>
+
+<article>
+  <header><strong>3. Wyliczenie należności</strong></header>
+  {% if r and r.kwota_naleznosci is not none %}
+  <table class="wyliczenie">
+    <tbody>
+      <tr><th scope="row">Dieta</th><td>{{ "%.2f" | format(r.dieta or 0) }} zł</td></tr>
+      <tr><th scope="row">Zwrot kosztów przejazdu</th><td>{{ "%.2f" | format(r.zwrot_przejazdu or 0) }} zł</td></tr>
+      <tr><th scope="row">Zwrot kosztów noclegu</th><td>{{ "%.2f" | format(r.zwrot_noclegu or 0) }} zł</td></tr>
+      <tr><th scope="row">Ryczałty</th><td>{{ "%.2f" | format(r.ryczalty or 0) }} zł</td></tr>
+      <tr class="razem"><th scope="row">Kwota należności</th><td>{{ "%.2f" | format(r.kwota_naleznosci) }} zł</td></tr>
+    </tbody>
+  </table>
+  {% if dokumenty | selectattr("przekracza_limit") | list %}
+  <p class="komunikat ostrzezenie">Część dokumentów przekracza limit – uwzględniono je do wysokości limitu.</p>
+  {% endif %}
+  <p><small>Status rozliczenia: {{ r.status }}</small></p>
+  {% else %}
+  <p>Wyliczenie pojawi się tutaj po uzupełnieniu czasu podróży i dokumentów kosztowych.</p>
   {% endif %}
 </article>
 {% endblock %}
