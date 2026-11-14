@@ -1,6 +1,7 @@
 """Interfejs /app: logowanie demonstracyjne, złożenie wniosku, podgląd statusu, decyzja przełożonego."""
 
 import asyncio
+from datetime import timedelta
 
 import pytest
 from fastapi.testclient import TestClient
@@ -8,9 +9,9 @@ from sqlalchemy import func, select
 
 from kwatermistrz.agents import AGENCI
 from kwatermistrz.api.main import app, get_broker
-from kwatermistrz.db import sesja
-from kwatermistrz.models import Delegacja, DokumentKosztowy, Status
-from kwatermistrz.web.strony import CIASTECZKO
+from kwatermistrz.db import sesja, teraz
+from kwatermistrz.models import Delegacja, DokumentKosztowy, LogOperacji, Status, Zolnierz
+from kwatermistrz.web.strony import CIASTECZKO, OPERACJA_PRZEKAZANIA, SLOWNIK_STATUSOW
 
 
 @pytest.fixture
@@ -145,3 +146,86 @@ def test_wniosek_z_bledami_pokazuje_co_uzupelnic(klient, broker):
     strona = klient.get(f"/app/wnioski/{id_d}").text
     assert "do uzupełnienia" in strona
     assert "Uzupełnij cel wyjazdu" in strona and "Data powrotu nie może być wcześniejsza" in strona
+
+
+def test_status_wniosku_pokazuje_etap_osobe_czas_i_eskalacje(klient):
+    """S22IT1S0P2-32: etap na ścieżce, osoba odpowiedzialna, czas oczekiwania w dniach, przekazanie zastępcy."""
+    with sesja() as s:
+        s.add(
+            Delegacja(
+                id_delegacji="DEL-UI-32",
+                id_zolnierza="ZOL-003",
+                dane_wniosku={},
+                status=Status.W_AKCEPTACJI,
+                data_zmiany_statusu=teraz() - timedelta(days=3, hours=1),
+                id_zatwierdzajacego="ZOL-002",
+                liczba_przypomnien=1,
+                przekazano_zastepcy=True,
+            )
+        )
+        s.flush()
+        s.add(
+            LogOperacji(
+                id_delegacji="DEL-UI-32",
+                id_agenta="AG-03",
+                etap="Zatwierdzenie",
+                operacja=OPERACJA_PRZEKAZANIA,
+                wynik="Ostrzeżenie",
+                czas_trwania_ms=1,
+            )
+        )
+        zastepca = s.get(Zolnierz, "ZOL-002").imie_nazwisko
+
+    zaloguj(klient, "ZOL-003")
+    strona = klient.get("/app/wnioski/DEL-UI-32").text
+    assert 'aria-current="step"' in strona
+    assert "3 dni" in strona
+    assert "przekazano osobie zastępującej" in strona and zastepca in strona
+
+    lista = klient.get("/app/pulpit").text
+    assert zastepca in lista and "przekazano zastępcy" in lista and "3 dni" in lista
+
+
+def test_status_bez_nowych_informacji_jest_oznaczony_jako_nieaktualny(klient):
+    """S22IT1S0P2-32, scenariusz 3a: ostatni znany status z datą i zastrzeżeniem, że może być nieaktualny."""
+    with sesja() as s:
+        for id_d, od in (("DEL-UI-STARY", timedelta(hours=1)), ("DEL-UI-NOWY", timedelta(0))):
+            s.add(
+                Delegacja(
+                    id_delegacji=id_d,
+                    id_zolnierza="ZOL-003",
+                    dane_wniosku={},
+                    status=Status.ZLOZONY,
+                    data_zmiany_statusu=teraz() - od,
+                )
+            )
+
+    zaloguj(klient, "ZOL-003")
+    assert "nie ma nowych informacji" in klient.get("/app/wnioski/DEL-UI-STARY").text
+    assert "nie ma nowych informacji" not in klient.get("/app/wnioski/DEL-UI-NOWY").text
+
+
+def test_slownik_statusow_opisuje_kazdy_status():
+    """S22IT1S0P2-32: słownik statusów delegacji – opis dla każdego etapu obsługi."""
+    statusy = {wartosc for nazwa, wartosc in vars(Status).items() if nazwa.isupper()}
+    assert set(SLOWNIK_STATUSOW) == statusy
+    assert all(opis.strip() for opis in SLOWNIK_STATUSOW.values())
+
+
+def test_interfejs_wyjasnia_znaczenie_statusu(klient):
+    """S22IT1S0P2-32: opis statusu na stronie wniosku i legenda statusów na liście wniosków."""
+    with sesja() as s:
+        s.add(
+            Delegacja(
+                id_delegacji="DEL-UI-SL",
+                id_zolnierza="ZOL-003",
+                dane_wniosku={},
+                status=Status.W_AKCEPTACJI,
+                id_zatwierdzajacego="ZOL-001",
+            )
+        )
+
+    zaloguj(klient, "ZOL-003")
+    assert SLOWNIK_STATUSOW[Status.W_AKCEPTACJI] in klient.get("/app/wnioski/DEL-UI-SL").text
+    lista = klient.get("/app/pulpit").text
+    assert "Co oznaczają statusy?" in lista and SLOWNIK_STATUSOW[Status.DO_ROZLICZENIA] in lista

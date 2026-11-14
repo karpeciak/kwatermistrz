@@ -107,3 +107,32 @@ def test_brak_decyzji_przypomnienie_potem_eskalacja_do_zastepcy_s13(broker):
     with sesja() as s:
         eskalacja = s.scalar(select(LogDecyzji).where(LogDecyzji.typ_decyzji == "Eskalacja do zastępcy"))
     assert eskalacja.wybrany_wariant == "ZOL-002" and eskalacja.rodzaj_decyzji == "Regułowa"
+
+
+def test_po_dacie_powrotu_delegacja_przechodzi_do_rozliczenia_s32(broker):
+    """S22IT1S0P2-32: zorganizowany → w trakcie → do rozliczenia według dat (zadanie cykliczne Koordynatora)."""
+    dzis = teraz().date()
+    id_d = utworz_delegacje(
+        status=Status.ZORGANIZOWANY,
+        data_wyjazdu=dzis - timedelta(days=5),
+        data_powrotu=dzis - timedelta(days=1),
+    )
+    with sesja() as s:
+        # powrót dzisiaj – wyjazd jeszcze trwa
+        s.add(
+            Delegacja(
+                id_delegacji="DEL-TEST-2",
+                id_zolnierza="ZOL-004",
+                dane_wniosku=WNIOSEK,
+                status=Status.W_TRAKCIE,
+                data_wyjazdu=dzis - timedelta(days=2),
+                data_powrotu=dzis,
+            )
+        )
+    koordynator = next(klasa for klasa in AGENCI.values() if klasa.id_agenta == "AG-01")(broker)
+
+    for k, funkcja, operacja in koordynator.zadania_cykliczne():
+        asyncio.run(koordynator.wykonaj(k, funkcja, operacja))
+
+    assert delegacja(id_d).status == Status.DO_ROZLICZENIA
+    assert delegacja("DEL-TEST-2").status == Status.W_TRAKCIE

@@ -11,7 +11,7 @@ Strony do rozbudowy w historyjkach sprintu 1:
 - S22IT1S0P2-36, -20, -43 rozliczenie → nowa strona `rozliczenie.html`.
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -46,6 +46,37 @@ STREFA = ZoneInfo("Europe/Warsaw")
 
 # Etapy, na których pracują agenci – strona wniosku odświeża się wtedy sama
 ETAPY_W_TOKU = {Status.ZLOZONY, Status.ZATWIERDZONY}
+
+# S22IT1S0P2-32: ścieżka etapów obsługi wniosku i statusy boczne
+ETAPY_PROCESU = [
+    Status.ZLOZONY,
+    Status.W_AKCEPTACJI,
+    Status.ZATWIERDZONY,
+    Status.ZORGANIZOWANY,
+    Status.W_TRAKCIE,
+    Status.DO_ROZLICZENIA,
+    Status.ROZLICZONY,
+]
+# Status boczny → etap ścieżki, na którym zatrzymał się wniosek
+ETAP_STATUSU_BOCZNEGO = {Status.DO_UZUPELNIENIA: Status.ZLOZONY, Status.ODRZUCONY: Status.W_AKCEPTACJI}
+# Nazwy operacji Agenta Zatwierdzeń (agents/zatwierdzenia.py) – daty eskalacji bierzemy z logu operacji
+OPERACJA_PRZYPOMNIENIA = "Przypomnienie o oczekującym wniosku"
+OPERACJA_PRZEKAZANIA = "Przekazanie wniosku zastępcy"
+# Po tylu minutach bez aktywności agentów status „w toku” może być nieaktualny (S22IT1S0P2-32, scenariusz 3a)
+NIEAKTUALNY_PO = timedelta(minutes=10)
+# Słownik statusów delegacji (S22IT1S0P2-32) – co oznacza każdy etap obsługi, w języku wnioskodawcy
+SLOWNIK_STATUSOW = {
+    Status.ROBOCZY: "Wersja robocza – wniosek nie został jeszcze złożony.",
+    Status.ZLOZONY: "Wniosek wpłynął do systemu – agenci sprawdzają jego kompletność i poprawność.",
+    Status.DO_UZUPELNIENIA: "Wniosek wymaga poprawek – uzupełnij wskazane dane i złóż go ponownie.",
+    Status.W_AKCEPTACJI: "Wniosek czeka na decyzję przełożonego.",
+    Status.ZATWIERDZONY: "Przełożony zgodził się na wyjazd – trwa przygotowanie polecenia, przejazdu i noclegu.",
+    Status.ODRZUCONY: "Przełożony nie wyraził zgody na wyjazd.",
+    Status.ZORGANIZOWANY: "Wyjazd jest przygotowany – polecenie wyjazdu, przejazd i nocleg są gotowe.",
+    Status.W_TRAKCIE: "Trwa wyjazd służbowy.",
+    Status.DO_ROZLICZENIA: "Wyjazd się zakończył – złóż rozliczenie z dokumentami kosztowymi.",
+    Status.ROZLICZONY: "Rozliczenie zostało sprawdzone i przekazane do komórki finansowej.",
+}
 WYNIK_DOKUMENT_PRZYJETY = "dokument-przyjety"
 
 szablony = Jinja2Templates(directory=KATALOG / "szablony")
@@ -72,6 +103,24 @@ def ile_czasu(od: datetime | None) -> str:
     return f"{minuty // (24 * 60)} dni {minuty % (24 * 60) // 60} h"
 
 
+def czas_na_etapie(od: datetime | None) -> str:
+    """Czas oczekiwania na etapie w dniach (S22IT1S0P2-32); poniżej doby – w godzinach i minutach."""
+    if od is None:
+        return "–"
+    dni = (teraz() - od).days
+    if dni < 1:
+        return ile_czasu(od)
+    return "1 dzień" if dni == 1 else f"{dni} dni"
+
+
+def osoba(z: Zolnierz | None) -> str:
+    """Osoba odpowiedzialna: stopień, imię i nazwisko, stanowisko (S22IT1S0P2-32)."""
+    if z is None:
+        return "–"
+    tekst = f"{z.stopien} {z.imie_nazwisko}"
+    return f"{tekst}, {z.funkcja}" if z.funkcja else tekst
+
+
 def data_pl(wartosc: str | None) -> str:
     """Data z wniosku (RRRR-MM-DD lub DD.MM.RRRR) w formacie DD.MM.RRRR."""
     if not wartosc:
@@ -87,7 +136,15 @@ def klasa_statusu(status: str) -> str:
     return "status-" + status.replace(" ", "-").replace("ł", "l").replace("ż", "z").replace("ę", "e")
 
 
-szablony.env.filters.update(czas=czas_lokalny, ile_czasu=ile_czasu, klasa_statusu=klasa_statusu, data_pl=data_pl)
+szablony.env.filters.update(
+    czas=czas_lokalny,
+    ile_czasu=ile_czasu,
+    klasa_statusu=klasa_statusu,
+    data_pl=data_pl,
+    czas_na_etapie=czas_na_etapie,
+    osoba=osoba,
+)
+szablony.env.globals["slownik_statusow"] = SLOWNIK_STATUSOW
 
 
 # ---------------------------------------------------------------- użytkownik
@@ -155,7 +212,9 @@ def pulpit(request: Request, s: Session = Depends(get_sesja), uzytkownik: Zolnie
         .where(Delegacja.id_zolnierza == uzytkownik.id_zolnierza)
         .order_by(Delegacja.data_zmiany_statusu.desc())
     ).all()
-    return strona(request, s, "pulpit.html", uzytkownik, wnioski=wnioski)
+    id_osob = {d.id_zatwierdzajacego for d in wnioski if d.id_zatwierdzajacego}
+    osoby = {z.id_zolnierza: z for z in s.scalars(select(Zolnierz).where(Zolnierz.id_zolnierza.in_(id_osob)))}
+    return strona(request, s, "pulpit.html", uzytkownik, wnioski=wnioski, osoby=osoby)
 
 
 @router.get("/wnioski/nowy", response_class=HTMLResponse)
@@ -219,6 +278,10 @@ def dane_wniosku(s: Session, id_delegacji: str, uzytkownik: Zolnierz) -> dict:
         ]
         if walidacje and walidacje[-1].wybrany_wariant == "Do poprawy":
             bledy = walidacje[-1].uzasadnienie.split("; ")
+    etap = ETAP_STATUSU_BOCZNEGO.get(d.status, d.status)
+    przypomnienie = next((o for o in operacje if o.operacja == OPERACJA_PRZYPOMNIENIA), None)
+    przekazanie = next((o for o in operacje if o.operacja == OPERACJA_PRZEKAZANIA), None)
+    ostatnia_aktywnosc = max([d.data_zmiany_statusu, *(o.znacznik_czasu for o in operacje)])
     return dict(
         d=d,
         wnioskodawca=s.get(Zolnierz, d.id_zolnierza),
@@ -229,6 +292,13 @@ def dane_wniosku(s: Session, id_delegacji: str, uzytkownik: Zolnierz) -> dict:
         agenci={a.id_agenta: a.nazwa for a in s.scalars(select(Agent))},
         bledy=bledy,
         w_toku=d.status in ETAPY_W_TOKU,
+        etapy=ETAPY_PROCESU,
+        pozycja_etapu=ETAPY_PROCESU.index(etap) if etap in ETAPY_PROCESU else -1,
+        status_boczny=d.status in ETAP_STATUSU_BOCZNEGO,
+        przypomnienie=przypomnienie,
+        przekazanie=przekazanie,
+        ostatnia_aktywnosc=ostatnia_aktywnosc,
+        nieaktualny=d.status in ETAPY_W_TOKU and teraz() - ostatnia_aktywnosc > NIEAKTUALNY_PO,
     )
 
 

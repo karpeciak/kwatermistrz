@@ -1,0 +1,17 @@
+{# Ścieżka etapów obsługi wniosku (S22IT1S0P2-32) – gdzie jest wniosek na tle całego procesu #}
+{% if pozycja_etapu >= 0 %}
+<ol class="etapy" aria-label="Etapy obsługi wniosku">
+  {% for etap in etapy %}
+    {% if loop.index0 < pozycja_etapu %}
+      <li class="zrobiony"><span class="niewidoczny">Zakończony etap: </span>{{ etap }}</li>
+    {% elif loop.index0 == pozycja_etapu %}
+      <li class="biezacy{% if status_boczny %} boczny{% endif %}" aria-current="step">
+        <span class="niewidoczny">Bieżący etap: </span>{{ etap }}
+        {% if status_boczny %}<small>{{ d.status }}</small>{% endif %}
+      </li>
+    {% else %}
+      <li>{{ etap }}</li>
+    {% endif %}
+  {% endfor %}
+</ol>
+{% endif %}

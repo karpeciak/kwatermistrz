@@ -13,25 +13,45 @@
 
 {% if wnioski %}
 <div class="overflow-auto">
-<table>
-  <thead>
-    <tr><th>Numer</th><th>Cel</th><th>Miejsce</th><th>Termin</th><th>Status</th><th>Od</th></tr>
-  </thead>
-  <tbody>
-    {% for d in wnioski %}
-    {% set w = d.dane_wniosku %}
-    <tr>
-      <td class="bez-lamania"><a href="/app/wnioski/{{ d.id_delegacji }}">{{ d.id_delegacji }}</a></td>
-      <td>{{ d.cel_wyjazdu or w.get("cel_wyjazdu") or "–" }}</td>
-      <td>{{ d.miejsce_docelowe or w.get("miejsce_docelowe") or "–" }}</td>
-      <td><span class="bez-lamania">{{ w.get("data_wyjazdu") | data_pl }} – {{ w.get("data_powrotu") | data_pl }}</span></td>
-      <td><span class="status {{ d.status | klasa_statusu }}">{{ d.status }}</span></td>
-      <td>{{ d.data_zmiany_statusu | ile_czasu }} temu</td>
-    </tr>
-    {% endfor %}
-  </tbody>
-</table>
+  <table>
+    <thead>
+      <tr><th>Numer</th><th>Cel</th><th>Miejsce</th><th>Termin</th><th>Status</th><th>Czeka u</th><th>Na etapie</th></tr>
+    </thead>
+    <tbody>
+      {% for d in wnioski %}
+      {% set w = d.dane_wniosku %}
+      {% set o = osoby.get(d.id_zatwierdzajacego) %}
+      <tr>
+        <td class="bez-lamania"><a href="/app/wnioski/{{ d.id_delegacji }}">{{ d.id_delegacji }}</a></td>
+        <td>{{ d.cel_wyjazdu or w.get("cel_wyjazdu") or "–" }}</td>
+        <td>{{ d.miejsce_docelowe or w.get("miejsce_docelowe") or "–" }}</td>
+        <td><span class="bez-lamania">{{ w.get("data_wyjazdu") | data_pl }} – {{ w.get("data_powrotu") | data_pl }}</span></td>
+        <td><span class="status {{ d.status | klasa_statusu }}" title="{{ slownik_statusow.get(d.status, '') }}">{{ d.status }}</span></td>
+        <td>
+          {% if d.status == "w akceptacji" and o %}{{ o.stopien }} {{ o.imie_nazwisko }}
+            {% if d.przekazano_zastepcy %}<br><small>przekazano zastępcy</small>
+            {% elif d.liczba_przypomnien %}<br><small>wysłano przypomnienie</small>{% endif %}
+          {% elif d.status == "do uzupełnienia" %}u Ciebie – uzupełnij wniosek
+          {% elif d.status in ("złożony", "zatwierdzony") %}agenci systemu
+          {% else %}–{% endif %}
+        </td>
+        <td class="bez-lamania">{{ d.data_zmiany_statusu | czas_na_etapie }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
 </div>
+
+{# Słownik statusów delegacji (S22IT1S0P2-32) #}
+<details class="slownik-statusow">
+  <summary>Co oznaczają statusy?</summary>
+  <dl>
+    {% for status, opis in slownik_statusow.items() %}
+    <dt><span class="status {{ status | klasa_statusu }}">{{ status }}</span></dt>
+    <dd>{{ opis }}</dd>
+    {% endfor %}
+  </dl>
+</details>
 {% else %}
 <article class="pusto">
   <p>Nie masz jeszcze żadnych wniosków o wyjazd służbowy.</p>

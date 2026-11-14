@@ -1,28 +1,57 @@
 {% set w = d.dane_wniosku %}
 <div id="stan-wniosku"
-     {% if w_toku %}hx-get="/app/wnioski/{{ d.id_delegacji }}/stan" hx-trigger="every 3s" hx-swap="outerHTML"{% endif %}>
+     {% if w_toku %}hx-get="/app/wnioski/{{ d.id_delegacji }}/stan" hx-trigger="every 3s" hx-swap="outerHTML"
+     hx-on::send-error="this.querySelector('.brak-polaczenia').hidden = false"
+     hx-on::response-error="this.querySelector('.brak-polaczenia').hidden = false"{% endif %}>
 
   <div class="naglowek-strony">
     <h2>Wniosek {{ d.id_delegacji }}</h2>
-    <span class="status duzy {{ d.status | klasa_statusu }}">{{ d.status }}</span>
+    <span class="status duzy {{ d.status | klasa_statusu }}" title="{{ slownik_statusow.get(d.status, '') }}">{{ d.status }}</span>
   </div>
+
+  {% include "_etapy_wniosku.html" %}
+
+  {# S22IT1S0P2-32, scenariusz 3a: brak aktualnej informacji o statusie #}
+  {% if w_toku %}
+  <p class="komunikat ostrzezenie brak-polaczenia" role="status" hidden>
+    Nie udało się pobrać aktualnego statusu. Pokazujemy ostatni znany status „{{ d.status }}”
+    ustalony {{ d.data_zmiany_statusu | czas }} – może być nieaktualny.
+  </p>
+  {% endif %}
+  {% if nieaktualny %}
+  <p class="komunikat ostrzezenie" role="status">
+    Od {{ ostatnia_aktywnosc | czas }} nie ma nowych informacji o obsłudze wniosku.
+    Ostatni znany status „{{ d.status }}” ustalono {{ d.data_zmiany_statusu | czas }} – może być nieaktualny.
+  </p>
+  {% endif %}
 
   <article>
     <header><strong>Bieżący etap</strong>{% if w_toku %} <span aria-busy="true">agenci pracują nad wnioskiem</span>{% endif %}</header>
     <div class="grid">
-      <div><small>Status</small><p>{{ d.status }}</p></div>
-      <div><small>Na tym etapie od</small><p>{{ d.data_zmiany_statusu | czas }} ({{ d.data_zmiany_statusu | ile_czasu }})</p></div>
+      <div><small>Status</small>
+        <p>{{ d.status }}<br><small>{{ slownik_statusow.get(d.status, "") }}</small></p>
+      </div>
+      <div><small>Na tym etapie od</small>
+        <p>{{ d.data_zmiany_statusu | czas }} · <strong>{{ d.data_zmiany_statusu | czas_na_etapie }}</strong></p>
+      </div>
       <div><small>Osoba odpowiedzialna</small>
-        <p>{% if zatwierdzajacy and d.status == "w akceptacji" %}{{ zatwierdzajacy.stopien }} {{ zatwierdzajacy.imie_nazwisko }}, {{ zatwierdzajacy.funkcja }}{% else %}–{% endif %}</p>
+        <p>
+          {% if d.status == "w akceptacji" and zatwierdzajacy %}{{ zatwierdzajacy | osoba }}
+          {% elif d.status == "do uzupełnienia" %}{{ wnioskodawca | osoba }} <small>(uzupełnienie wniosku)</small>
+          {% elif w_toku %}System Kwatermistrz <small>(agenci)</small>
+          {% else %}–{% endif %}
+        </p>
       </div>
     </div>
     {% if d.status == "do rozliczenia" and uzytkownik.id_zolnierza == d.id_zolnierza %}
     <p><a href="/app/wnioski/{{ d.id_delegacji }}/rozliczenie" role="button">Przejdź do rozliczenia</a></p>
     {% endif %}
     {% if d.przekazano_zastepcy %}
-    <p class="komunikat">Przełożony nie podjął decyzji w terminie – wniosek przekazano osobie zastępującej.</p>
+    <p class="komunikat">Przełożony nie podjął decyzji w terminie – wniosek przekazano osobie zastępującej{% if przekazanie %}
+      ({{ przekazanie.znacznik_czasu | czas }}){% endif %}: <strong>{{ zatwierdzajacy | osoba }}</strong>.</p>
     {% elif d.liczba_przypomnien %}
-    <p class="komunikat">Termin decyzji minął – przełożony otrzymał przypomnienie.</p>
+    <p class="komunikat">Termin decyzji minął – przełożony otrzymał przypomnienie{% if przypomnienie %}
+      ({{ przypomnienie.znacznik_czasu | czas }}){% endif %}.</p>
     {% endif %}
     {% if bledy %}
     <div class="bledy">
