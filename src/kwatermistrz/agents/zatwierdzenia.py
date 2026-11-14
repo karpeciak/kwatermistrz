@@ -2,6 +2,7 @@
 ochrona przed podwójnym zatwierdzeniem (S22IT1S0P2-14)."""
 
 from datetime import timedelta
+from decimal import Decimal
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -10,10 +11,12 @@ from ..audit import Decyzja
 from ..config import settings
 from ..db import sesja, teraz
 from ..messaging import Komunikat, Typ
-from ..models import Delegacja, Status, Zolnierz
+from ..models import Delegacja, Jednostka, Status, Zolnierz
 from .base import Agent, BladProcesu, Kontekst, pobierz_delegacje
 
 KONTROLA_TERMINU = "cykl.termin_decyzji"
+# Decyzja zapisywana, gdy zatwierdzenie przekracza budżet jednostki (S22IT1S0P2-35, 4b)
+TYP_KONTROLI_BUDZETU = "Kontrola budżetu"
 
 
 class AgentZatwierdzen(Agent):
@@ -48,10 +51,30 @@ class AgentZatwierdzen(Agent):
         if id_osoby != d.id_zatwierdzajacego:
             ktx.ostrzezenie(f"{id_osoby} nie jest osobą zatwierdzającą tego wniosku")
             return
+        if k.dane.get("przekroczenie_budzetu"):
+            # S22IT1S0P2-35, 4b: łączny koszt ponad dostępny budżet – zatwierdzenie czeka na komórkę finansową
+            ktx.operacja = "Wstrzymanie zatwierdzenia – przekroczenie budżetu"
+            ktx.ostrzezenie(k.dane["przekroczenie_budzetu"])
+            ktx.decyzja(
+                Decyzja(
+                    typ=TYP_KONTROLI_BUDZETU,
+                    wybrany_wariant="Wstrzymano – do decyzji komórki finansowej",
+                    uzasadnienie=k.dane["przekroczenie_budzetu"],
+                    decyzja_finansowa=True,
+                )
+            )
+            return
         d.decyzja = k.dane["decyzja"]
         d.data_decyzji = teraz()
         d.uzasadnienie_decyzji = k.dane.get("uzasadnienie")
         ktx.opis = f"{d.decyzja} – {id_osoby}"
+        if d.decyzja == "Zgoda":
+            # S22IT1S0P2-35: zatwierdzony wyjazd angażuje budżet delegacji jednostki wnioskodawcy
+            koszt = Decimal(k.dane["koszt"]) if k.dane.get("koszt") else d.szacowany_koszt
+            wnioskodawca = s.get(Zolnierz, d.id_zolnierza)
+            jednostka = s.get(Jednostka, wnioskodawca.id_jednostki) if wnioskodawca else None
+            if koszt and jednostka is not None:
+                jednostka.budzet_wykorzystany = (jednostka.budzet_wykorzystany or 0) + koszt
         ktx.wyslij(Typ.WYNIK_ZATWIERDZENIA, {"decyzja": d.decyzja, "id_osoby": id_osoby})
 
     # ------------------------------------------------------------ kontrola terminów

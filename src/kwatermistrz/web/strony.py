@@ -13,6 +13,7 @@ Strony do rozbudowy w historyjkach sprintu 1:
 
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Annotated
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
@@ -26,8 +27,15 @@ from ..api.rozliczenia import KOMUNIKAT_PRZYJETY, DokumentKosztowyIn, przyjmij_d
 from ..api.schemas import WniosekIn
 from ..api.wnioski import zarejestruj_wniosek
 from ..api.zaleznosci import get_broker, get_sesja
+from ..api.zatwierdzenia import (
+    budzet_jednostki,
+    decyzja_zbiorcza,
+    koszt_delegacji,
+    oczekujace_na_decyzje,
+    wstrzymane_z_powodu_budzetu,
+)
 from ..db import teraz
-from ..messaging import Broker, Komunikat, Typ
+from ..messaging import Broker
 from ..models import (
     Agent,
     Delegacja,
@@ -402,20 +410,51 @@ def dodaj_dokument_w_interfejsie(
     )
 
 
-# ---------------------------------------------------------------- przełożony
+# ---------------------------------------------------------------- przełożony – zbiorcze zatwierdzanie (S22IT1S0P2-35)
+
+
+def kwota(wartosc) -> str:
+    """Kwota w złotych w zapisie polskim, np. 1 670,00 zł."""
+    if wartosc is None:
+        return "–"
+    return f"{wartosc:,.2f}".replace(",", "\u00a0").replace(".", ",") + "\u00a0zł"
+
+
+szablony.env.filters["kwota"] = kwota
+
+
+def dane_zatwierdzania(s: Session, uzytkownik: Zolnierz) -> dict:
+    """Zestawienie dla przełożonego: wnioski, szacowane koszty, budżet jednostki, wnioski wstrzymane."""
+    wnioski = oczekujace_na_decyzje(s, uzytkownik.id_zolnierza)
+    return dict(
+        wnioski=wnioski,
+        wnioskodawcy={z.id_zolnierza: z for z in s.scalars(select(Zolnierz))},
+        koszty={d.id_delegacji: koszt_delegacji(d) for d in wnioski},
+        budzet=budzet_jednostki(s, uzytkownik),
+        wstrzymane=wstrzymane_z_powodu_budzetu(s, [d.id_delegacji for d in wnioski]),
+    )
 
 
 @router.get("/do-zatwierdzenia", response_class=HTMLResponse)
 def do_zatwierdzenia(
     request: Request, s: Session = Depends(get_sesja), uzytkownik: Zolnierz = Depends(biezacy_uzytkownik)
 ):
-    wnioski = s.scalars(
-        select(Delegacja)
-        .where(Delegacja.status == Status.W_AKCEPTACJI, Delegacja.id_zatwierdzajacego == uzytkownik.id_zolnierza)
-        .order_by(Delegacja.data_zmiany_statusu)
-    ).all()
-    wnioskodawcy = {z.id_zolnierza: z for z in s.scalars(select(Zolnierz))}
-    return strona(request, s, "do_zatwierdzenia.html", uzytkownik, wnioski=wnioski, wnioskodawcy=wnioskodawcy)
+    return strona(request, s, "do_zatwierdzenia.html", uzytkownik, **dane_zatwierdzania(s, uzytkownik))
+
+
+@router.post("/do-zatwierdzenia", response_class=HTMLResponse)
+async def decyduj_zbiorczo(
+    request: Request,
+    wnioski: Annotated[list[str] | None, Form()] = None,
+    decyzja: str = Form(...),
+    uzasadnienie: str = Form(""),
+    s: Session = Depends(get_sesja),
+    broker: Broker = Depends(get_broker),
+    uzytkownik: Zolnierz = Depends(biezacy_uzytkownik),
+):
+    wynik = await decyzja_zbiorcza(s, broker, uzytkownik, wnioski or [], decyzja, uzasadnienie)
+    kontekst = dane_zatwierdzania(s, uzytkownik)
+    return strona(request, s, "do_zatwierdzenia.html", uzytkownik, **kontekst, wynik=wynik)
 
 
 @router.post("/do-zatwierdzenia/{id_delegacji}", response_class=HTMLResponse)
@@ -440,8 +479,12 @@ async def decyduj(
             "_wiersz_decyzji.html",
             {"d": d, "wnioskodawca": wnioskodawca, "blad": "Podaj uzasadnienie odmowy lub zwrotu do uzupełnienia"},
         )
-    dane = {"id_osoby": uzytkownik.id_zolnierza, "decyzja": decyzja, "uzasadnienie": uzasadnienie.strip() or None}
-    await broker.publikuj(Komunikat(typ=Typ.DECYZJA_PRZELOZONEGO, id_delegacji=id_delegacji, dane=dane))
-    return szablony.TemplateResponse(
-        request, "_wiersz_decyzji.html", {"d": d, "wnioskodawca": wnioskodawca, "przekazano": decyzja}
-    )
+    wynik = await decyzja_zbiorcza(s, broker, uzytkownik, [id_delegacji], decyzja, uzasadnienie)
+    kontekst = {"d": d, "wnioskodawca": wnioskodawca, "koszt": koszt_delegacji(d)}
+    if wynik.wstrzymane:
+        kontekst.update(wstrzymany=True, blad=wynik.komunikat)
+    elif wynik.blad:
+        kontekst["blad"] = wynik.komunikat
+    else:
+        kontekst["przekazano"] = decyzja
+    return szablony.TemplateResponse(request, "_wiersz_decyzji.html", kontekst)
