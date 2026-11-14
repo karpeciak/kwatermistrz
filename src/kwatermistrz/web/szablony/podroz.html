@@ -3,12 +3,16 @@
 {% block tresc %}
 <p><a href="/app/wnioski/{{ d.id_delegacji }}">Wróć do wniosku {{ d.id_delegacji }}</a></p>
 <h2>Wybór wariantu podróży</h2>
-{% if przekazano %}<p role="status">Decyzja przekazana do agenta transportu. Odśwież stronę, aby sprawdzić zapis.</p>{% endif %}
+<p><strong>{{ trasa[0] }} → {{ trasa[1] }}</strong> · {{ d.data_wyjazdu }} — {{ d.data_powrotu }}</p>
+{% if blad %}<div role="alert" class="bledy">{{ blad }}</div>{% endif %}
+{% if oferta_zapisana %}<p role="status">Oferta została zapisana. Możesz dodać kolejną lub wybrać przejazdy.</p>{% endif %}
+{% if przekazano and not rozstrzygniete %}<p role="status">Decyzja przekazana do agenta transportu. Odśwież stronę, aby sprawdzić zapis.</p>{% endif %}
 <p>Najpierw sprawdzamy dotarcie na czas. Następnie porównujemy wybrane kryterium,
   koszt, bezpieczeństwo, przesiadki, punktualność i czas podróży.</p>
 <p>{{ uwaga }}</p>
 {% if istotna_roznica_czasu %}<p class="komunikat">Warianty w jednym kierunku różnią się czasem o ponad godzinę. Rozważ zmianę kryterium na najkrótszy czas lub punktualność.</p>{% endif %}
-{% if not termin_rozpoczecia %}<p class="komunikat">Brak godziny rozpoczęcia szkolenia — sprawdź termin dojazdu przed wyborem.</p>{% endif %}
+{% if not termin_rozpoczecia %}<p class="komunikat">Termin rozpoczęcia zadania dla tej trasy nie jest ustalony. Przed wyborem sprawdź godzinę dojazdu.</p>{% endif %}
+{% if warianty %}
 <form method="get">
   <label for="kryterium">Najważniejsze kryterium</label>
   <select id="kryterium" name="kryterium">
@@ -16,13 +20,26 @@
   </select>
   <button type="submit" class="secondary">Porównaj ponownie</button>
 </form>
-{% for kierunek in brak_kierunkow %}<p class="komunikat">Brak wariantów: {{ kierunek }}. Podróż wymaga uzgodnienia z osobą akceptującą.</p>{% endfor %}
-{% if rozstrzygniete %}<p role="status">Decyzja została zapisana. Wybrane przejazdy lub przyczyny odrzucenia są widoczne poniżej.</p>{% endif %}
+{% endif %}
+{% if not warianty and not do_uzgodnienia %}
+<article>
+  <header><strong>Brak danych ofert dla tej trasy</strong></header>
+  <p>Ewidencja nie zawiera propozycji dla {{ trasa[0] }} — {{ trasa[1] }}.
+    Dane przewoźników nie są pobierane automatycznie.</p>
+  {% if moze_wybrac %}<p>Dodaj sprawdzone oferty w obu kierunkach poniżej albo przekaż sprawę do uzgodnienia.</p>
+  {% else %}<p>Oferty może uzupełnić osoba akceptująca podróż.</p>{% endif %}
+</article>
+{% elif brak_kierunkow and not do_uzgodnienia %}
+<p class="komunikat">Uzupełnij propozycje w kierunku: {{ brak_kierunkow | join(", ") }}.</p>
+{% endif %}
+{% if do_uzgodnienia %}<p role="status">Sprawa została przekazana do dodatkowego uzgodnienia. Decyzja i uzasadnienie znajdują się w historii wniosku.</p>
+{% elif rozstrzygniete %}<p role="status">Decyzja została zapisana. Wybrane przejazdy są widoczne poniżej.</p>{% endif %}
 {% if not moze_wybrac %}<p>Wyboru dokonuje osoba akceptująca zatwierdzoną podróż.</p>{% endif %}
 <form method="post" action="/app/wnioski/{{ d.id_delegacji }}/podroz">
   <input type="hidden" name="csrf" value="{{ csrf }}">
   <input type="hidden" name="kryterium" value="{{ kryterium }}">
   {% for kierunek, pole in [("Tam", "id_tam"), ("Powrót", "id_powrot")] %}
+  {% if warianty | selectattr("kierunek", "equalto", kierunek) | list %}
   <fieldset>
     <legend><strong>{{ kierunek }}</strong></legend>
     <div class="overflow-auto"><table>
@@ -32,7 +49,7 @@
       <tr>
         <td><input type="radio" name="{{ pole }}" value="{{ w.id_przejazdu }}"
           aria-label="{{ kierunek }}: {{ w.przewoznik }}, {{ w.godzina_odjazdu }}"
-          {% if w.status == "wybrana" %}checked{% endif %}
+          {% if w.status == "wybrana" or dane_wyboru.get(pole) == w.id_przejazdu | string %}checked{% endif %}
           {% if not moze_wybrac or rozstrzygniete or w.spozniony %}disabled{% endif %}></td>
         <td>{{ w.skad }} → {{ w.dokad }}<br>{{ w.srodek_transportu }} — {{ w.przewoznik }}</td>
         <td>{{ w.data_przejazdu }} {{ w.godzina_odjazdu.strftime("%H:%M") }}<br>{{ w.przyjazd.strftime("%d.%m.%Y %H:%M") }}</td>
@@ -41,20 +58,53 @@
         <td>{{ w.bezpieczenstwo }}/5</td>
         <td>{% if w.rekomendowany %}<strong>Rekomendowany: {{ kryteria[kryterium] }}</strong><br>{{ w.podstawa_rekomendacji }}<br>{% endif %}
           {% if w.spozniony %}<strong>Przyjazd po rozpoczęciu szkolenia</strong><br>{% endif %}
-          {{ w.status }}<br>{{ w.uzasadnienie }}</td>
+          {{ w.status }}<br>{{ w.uzasadnienie }}{% if w.zrodlo %}<br><small>{{ w.zrodlo }}</small>{% endif %}</td>
       </tr>
       {% endfor %}
       </tbody>
     </table></div>
   </fieldset>
+  {% endif %}
   {% endfor %}
   {% if moze_wybrac and not rozstrzygniete %}
-  <label for="uzasadnienie">Uzasadnienie (wymagane dla innego wariantu lub odrzucenia wszystkich)</label>
-  <textarea id="uzasadnienie" name="uzasadnienie" maxlength="2000"></textarea>
+  <label for="uzasadnienie">Uzasadnienie (wymagane dla innego wariantu lub przekazania do uzgodnienia)</label>
+  <textarea id="uzasadnienie" name="uzasadnienie" maxlength="2000">{{ dane_wyboru.get("uzasadnienie", "") }}</textarea>
   <div class="grid">
-    <button type="submit" name="akcja" value="wybierz" {% if brak_kierunkow %}disabled{% endif %}>Zatwierdź oba przejazdy</button>
-    <button type="submit" name="akcja" value="odrzuc" class="secondary">Odrzuć wszystkie — do uzgodnienia</button>
+    {% if mozna_zatwierdzic %}<button type="submit" name="akcja" value="wybierz">Zatwierdź oba przejazdy</button>{% endif %}
+    <button type="submit" name="akcja" value="odrzuc" class="secondary">{% if warianty %}Odrzuć wszystkie — do uzgodnienia{% else %}Przekaż do uzgodnienia{% endif %}</button>
   </div>
   {% endif %}
 </form>
+{% if moze_wybrac and not rozstrzygniete %}
+<details {% if not warianty or blad %}open{% endif %}>
+  <summary><strong>Dodaj sprawdzoną ofertę przejazdu</strong></summary>
+  <p>Oferta dotyczy tylko tego wniosku i wskazanej daty. Wprowadź dane z rozkładu,
+    oferty przewoźnika albo potwierdzonego planu transportu.</p>
+  <form method="post" action="/app/wnioski/{{ d.id_delegacji }}/podroz/warianty">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <input type="hidden" name="klucz" value="{{ dane_oferty.get('klucz', '') }}">
+    <div class="grid">
+      <label>Kierunek<select name="kierunek" required>
+        {% for k in ["Tam", "Powrót"] %}<option value="{{ k }}" {% if dane_oferty.get('kierunek') == k %}selected{% endif %}>{{ k }} — {{ d.data_wyjazdu if k == "Tam" else d.data_powrotu }}</option>{% endfor %}
+      </select></label>
+      <label>Środek transportu<select name="srodek_transportu" required>
+        {% for t in ["kolej", "autobus", "transport wojskowy", "pojazd służbowy"] %}<option value="{{ t }}" {% if dane_oferty.get('srodek_transportu') == t %}selected{% endif %}>{{ t }}</option>{% endfor %}
+      </select></label>
+    </div>
+    <label>Przewoźnik lub organizator<input name="przewoznik" maxlength="100" required value="{{ dane_oferty.get('przewoznik', '') }}"></label>
+    <div class="grid">
+      <label>Godzina odjazdu<input type="time" name="godzina_odjazdu" required value="{{ dane_oferty.get('godzina_odjazdu', '') }}"></label>
+      <label>Czas przejazdu w minutach<input type="number" name="czas_min" min="1" max="2880" required value="{{ dane_oferty.get('czas_min', '') }}"></label>
+      <label>Koszt jednej osoby w zł<input type="number" name="koszt" min="0" step="0.01" required value="{{ dane_oferty.get('koszt', '') }}"></label>
+    </div>
+    <div class="grid">
+      <label>Liczba przesiadek<input type="number" name="liczba_przesiadek" min="0" max="20" required value="{{ dane_oferty.get('liczba_przesiadek', '') }}"></label>
+      <label>Punktualność w % według źródła<input type="number" name="punktualnosc" min="0" max="100" step="0.01" required value="{{ dane_oferty.get('punktualnosc', '') }}"></label>
+      <label>Ocena bezpieczeństwa organizatora (1–5)<input type="number" name="ocena_bezpieczenstwa" min="1" max="5" required value="{{ dane_oferty.get('ocena_bezpieczenstwa', '') }}"></label>
+    </div>
+    <label>Źródło i podstawa oceny<textarea name="zrodlo" minlength="3" maxlength="1000" required placeholder="Adres oferty, numer kursu lub plan transportu; podstawa punktualności i oceny bezpieczeństwa">{{ dane_oferty.get('zrodlo', '') }}</textarea></label>
+    <button type="submit">Dodaj ofertę do porównania</button>
+  </form>
+</details>
+{% endif %}
 {% endblock %}

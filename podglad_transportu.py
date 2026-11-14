@@ -7,6 +7,8 @@ Wiadomości wszystkich agentów są dostarczane w pamięci. Można tworzyć wła
 
 import asyncio
 import os
+import subprocess
+import sys
 from contextlib import asynccontextmanager
 from datetime import date, time
 from pathlib import Path
@@ -96,4 +98,16 @@ app.router.lifespan_context = start_podgladu
 
 
 if __name__ == "__main__":
+    print("Sprawdzam testy przed uruchomieniem aplikacji...", flush=True)
+    try:
+        kontrola = subprocess.run(
+            [sys.executable, "-m", "pytest", "-q", "--tb=short"],
+            cwd=Path(__file__).resolve().parent,
+            timeout=180,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        sys.exit("Testy nie zakończyły się w 180 sekund. Serwer nie został uruchomiony.")
+    if kontrola.returncode:
+        sys.exit("Testy wykazały błąd. Serwer nie został uruchomiony — wynik znajduje się powyżej.")
     uvicorn.run(app, host="127.0.0.1", port=8000)

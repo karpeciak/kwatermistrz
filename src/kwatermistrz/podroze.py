@@ -5,14 +5,28 @@ standardowo porównujemy koszt, bezpieczeństwo, przesiadki, punktualność i cz
 Brak godziny zakończenia zajęć w modelu wymaga ręcznej kontroli czasu powrotu.
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
+from decimal import Decimal
 from typing import Literal
+from unicodedata import normalize
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .models import Delegacja, Polaczenie, Przedsiewziecie, Przejazd, Status, StatusRezerwacji
+from .models import (
+    Delegacja,
+    Jednostka,
+    LogDecyzji,
+    LogOperacji,
+    Polaczenie,
+    Przedsiewziecie,
+    Przejazd,
+    Status,
+    StatusRezerwacji,
+    Zolnierz,
+)
 
 Kryterium = Literal["standardowe", "koszt", "czas", "bezpieczenstwo", "punktualnosc"]
 KRYTERIA = {
@@ -28,6 +42,65 @@ PROG_ROZNICY_CZASU_MIN = 60  # próg prezentacji MVP; do uzgodnienia z PO
 
 class BladPodrozy(ValueError):
     pass
+
+
+def nazwa_miejscowosci(wartosc: str) -> str:
+    return " ".join(normalize("NFC", wartosc).split()).casefold()
+
+
+class WariantPodrozyIn(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    klucz: UUID
+    kierunek: Literal["Tam", "Powrót"]
+    przewoznik: str = Field(min_length=1, max_length=100)
+    srodek_transportu: Literal["kolej", "autobus", "transport wojskowy", "pojazd służbowy"]
+    godzina_odjazdu: time
+    czas_min: int = Field(gt=0, le=2880)
+    koszt: Decimal = Field(ge=0, max_digits=10, decimal_places=2)
+    liczba_przesiadek: int = Field(ge=0, le=20)
+    punktualnosc: Decimal = Field(ge=0, le=100)
+    ocena_bezpieczenstwa: int = Field(ge=1, le=5)
+    zrodlo: str = Field(min_length=3, max_length=1000)
+
+    @model_validator(mode="after")
+    def bez_strefy(self):
+        if self.godzina_odjazdu.tzinfo is not None:
+            raise ValueError("Podaj lokalną godzinę odjazdu bez strefy")
+        return self
+
+    @property
+    def id_polaczenia(self) -> str:
+        return "M-" + self.klucz.hex[:18]
+
+
+def trasa_delegacji(s: Session, d: Delegacja) -> tuple[str, str]:
+    z = s.get(Zolnierz, d.id_zolnierza)
+    jednostka = s.get(Jednostka, z.id_jednostki) if z else None
+    return (jednostka.miejscowosc if jednostka else "", d.miejsce_docelowe or "")
+
+
+def decyzja_do_uzgodnienia(s: Session, d: Delegacja) -> bool:
+    ostatnia = s.scalar(
+        select(LogDecyzji)
+        .join(LogOperacji)
+        .where(
+            LogOperacji.id_delegacji == d.id_delegacji,
+            LogOperacji.id_agenta == "AG-04",
+            LogDecyzji.typ_decyzji == "Zapis wyboru podróży",
+        )
+        .order_by(LogDecyzji.id_decyzji.desc())
+    )
+    return ostatnia is not None and ostatnia.wybrany_wariant == "Do uzgodnienia"
+
+
+def sprawdz_dodanie_wariantu(s: Session, d: Delegacja) -> None:
+    if d.status != Status.ZATWIERDZONY:
+        raise BladPodrozy("Oferty można dodawać po zatwierdzeniu wniosku")
+    if not d.data_wyjazdu or not d.data_powrotu or not d.miejsce_docelowe:
+        raise BladPodrozy("Wniosek musi zawierać miejsce i daty podróży")
+    if any(r.status != StatusRezerwacji.PROPOZYCJA for r in przejazdy(s, d)) or decyzja_do_uzgodnienia(s, d):
+        raise BladPodrozy("Decyzja dotycząca podróży została już zapisana")
 
 
 class WyborPodrozy(BaseModel):
@@ -59,7 +132,11 @@ def przejazdy(s: Session, d: Delegacja) -> list[Przejazd]:
 
 def termin(s: Session, d: Delegacja) -> datetime | None:
     p = s.get(Przedsiewziecie, d.id_przedsiewziecia) if d.id_przedsiewziecia else None
-    if p and p.godzina_rozpoczecia:
+    if (
+        p
+        and p.godzina_rozpoczecia
+        and nazwa_miejscowosci(p.miejscowosc) == nazwa_miejscowosci(d.miejsce_docelowe or "")
+    ):
         return datetime.combine(p.data_rozpoczecia, p.godzina_rozpoczecia)
     return None
 
@@ -93,6 +170,7 @@ def zestawienie(s: Session, d: Delegacja, kryterium: str = "standardowe") -> dic
         warianty.append(
             {
                 "id_przejazdu": r.id_przejazdu,
+                "id_polaczenia": r.id_polaczenia,
                 "kierunek": r.kierunek,
                 "data_przejazdu": r.data_przejazdu,
                 "skad": p.skad,
@@ -108,6 +186,7 @@ def zestawienie(s: Session, d: Delegacja, kryterium: str = "standardowe") -> dic
                 "bezpieczenstwo": p.ocena_bezpieczenstwa,
                 "status": r.status,
                 "uzasadnienie": r.uzasadnienie,
+                "zrodlo": r.powod_zmiany if p.id_polaczenia.startswith("M-") else None,
                 "spozniony": spozniony,
                 "rekomendowany": False,
             }
@@ -137,8 +216,11 @@ def zestawienie(s: Session, d: Delegacja, kryterium: str = "standardowe") -> dic
             for kierunek in KIERUNKI
         ),
         "brak_kierunkow": [k for k in KIERUNKI if not any(w["kierunek"] == k for w in warianty)],
+        "mozna_zatwierdzic": all(any(w["kierunek"] == k and not w["spozniony"] for w in warianty) for k in KIERUNKI),
         "termin_rozpoczecia": deadline,
-        "uwaga": "Godzinę powrotu porównaj z zakończeniem zajęć — model nie zawiera godziny ich zakończenia.",
+        "trasa": trasa_delegacji(s, d),
+        "do_uzgodnienia": decyzja_do_uzgodnienia(s, d),
+        "uwaga": "Przed zatwierdzeniem sprawdź, czy odjazd powrotny następuje po zakończeniu zadania.",
     }
 
 
@@ -146,6 +228,8 @@ def sprawdz_decyzje(s: Session, d: Delegacja, wybor: WyborPodrozy) -> list[Przej
     if d.status != Status.ZATWIERDZONY:
         raise BladPodrozy("Wybór podróży jest dostępny dla zatwierdzonej delegacji")
     rows = przejazdy(s, d)
+    if decyzja_do_uzgodnienia(s, d):
+        raise BladPodrozy("Podróż została już przekazana do uzgodnienia")
     if any(r.status != StatusRezerwacji.PROPOZYCJA for r in rows):
         raise BladPodrozy("Decyzja dotycząca podróży została już zapisana")
     if wybor.odrzuc_wszystkie:

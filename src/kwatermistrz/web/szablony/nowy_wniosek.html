@@ -21,8 +21,12 @@
 
   <div class="grid">
     <label>Cel wyjazdu <input name="cel_wyjazdu" placeholder="np. szkolenie, kurs, odprawa"></label>
-    <label>Miejsce docelowe <input name="miejsce_docelowe" placeholder="miejscowość, jednostka"></label>
+    <label>Miejsce docelowe <input name="miejsce_docelowe" list="miasta-ofert" placeholder="miejscowość, jednostka"></label>
   </div>
+  <datalist id="miasta-ofert">{% for miasto in miasta_ofert %}<option value="{{ miasto }}">{% endfor %}</datalist>
+  <p><small>{% if miasta_ofert %}Oferty przejazdów są wpisane dla: {{ miasta_ofert | join(", ") }}. {% endif %}
+    Możesz podać inne miasto. Po zatwierdzeniu wniosku osoba akceptująca uzupełni sprawdzone oferty na ekranie podróży.
+    Dane przewoźników nie są pobierane automatycznie.</small></p>
   <div class="grid">
     <label>Data wyjazdu <input type="date" name="data_wyjazdu"></label>
     <label>Data powrotu <input type="date" name="data_powrotu"></label>

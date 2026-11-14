@@ -15,6 +15,8 @@ Przebieg:
    - `ktx.wyslij(Typ.WYNIK_TRANSPORTU)` – Koordynator sprawdzi, czy wyjazd jest zorganizowany.
 """
 
+from datetime import datetime, timedelta
+
 from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -34,10 +36,13 @@ from ..models import (
 )
 from ..podroze import (
     BladPodrozy,
+    WariantPodrozyIn,
     WyborPodrozy,
+    nazwa_miejscowosci,
     ocena,
     przejazdy,
     sprawdz_decyzje,
+    sprawdz_dodanie_wariantu,
     termin,
     zestawienie,
 )
@@ -61,6 +66,7 @@ class AgentTransportu(Agent):
         return {
             Typ.ZADANIE_TRANSPORTU: (self.przygotuj_warianty, "Przygotowanie wariantów podróży"),
             Typ.WYBOR_TRANSPORTU: (self.zapisz_wybor, "Zapis wybranego wariantu podróży"),
+            Typ.PROPOZYCJA_TRANSPORTU: (self.dodaj_wariant, "Dodanie sprawdzonej oferty przejazdu"),
         }
 
     def przygotuj_warianty(self, s: Session, k: Komunikat, ktx: Kontekst) -> None:
@@ -82,7 +88,13 @@ class AgentTransportu(Agent):
             ("Tam", jednostka.miejscowosc, d.miejsce_docelowe, d.data_wyjazdu),
             ("Powrót", d.miejsce_docelowe, jednostka.miejscowosc, d.data_powrotu),
         ):
-            oferty = list(s.scalars(select(Polaczenie).where(Polaczenie.skad == skad, Polaczenie.dokad == dokad)))
+            oferty = [
+                p
+                for p in s.scalars(select(Polaczenie))
+                if not p.id_polaczenia.startswith("M-")
+                and nazwa_miejscowosci(p.skad) == nazwa_miejscowosci(skad)
+                and nazwa_miejscowosci(p.dokad) == nazwa_miejscowosci(dokad)
+            ]
             oferty = [
                 p
                 for p in oferty
@@ -172,7 +184,7 @@ class AgentTransportu(Agent):
             .where(
                 LogOperacji.id_delegacji == d.id_delegacji,
                 LogOperacji.id_agenta == self.id_agenta,
-                LogDecyzji.typ_decyzji == "Rekomendacja wariantu podróży",
+                LogDecyzji.typ_decyzji.in_(("Rekomendacja wariantu podróży", "Dodanie wariantu podróży")),
             )
         )
         for wpis in rekomendacje:
@@ -199,3 +211,82 @@ class AgentTransportu(Agent):
             )
         )
         ktx.wyslij(Typ.WYNIK_TRANSPORTU)
+
+    def dodaj_wariant(self, s: Session, k: Komunikat, ktx: Kontekst) -> None:
+        d = zablokuj_delegacje(s, k.id_delegacji)
+        if not d.id_zatwierdzajacego or k.dane.get("id_osoby") != d.id_zatwierdzajacego:
+            raise BladProcesu("Ofertę może dodać osoba akceptująca podróż")
+        try:
+            w = WariantPodrozyIn.model_validate({p: v for p, v in k.dane.items() if p != "id_osoby"})
+            istniejacy = s.scalar(select(Przejazd).where(Przejazd.id_polaczenia == w.id_polaczenia))
+            if istniejacy:
+                p = s.get(Polaczenie, w.id_polaczenia)
+                if (
+                    istniejacy.id_delegacji != d.id_delegacji
+                    or istniejacy.kierunek != w.kierunek
+                    or p.przewoznik != w.przewoznik
+                    or p.srodek_transportu != w.srodek_transportu
+                    or p.godzina_odjazdu != w.godzina_odjazdu
+                    or p.czas_min != w.czas_min
+                    or p.koszt != w.koszt
+                    or p.liczba_przesiadek != w.liczba_przesiadek
+                    or p.punktualnosc != float(w.punktualnosc / 100)
+                    or p.ocena_bezpieczenstwa != w.ocena_bezpieczenstwa
+                    or istniejacy.powod_zmiany != f"Źródło: {w.zrodlo}\nDodał: {k.dane['id_osoby']}"
+                ):
+                    raise BladPodrozy("Klucz oferty został już wykorzystany dla innych danych")
+                ktx.opis = "Oferta już zapisana — pominięto ponowienie"
+                return
+            sprawdz_dodanie_wariantu(s, d)
+        except (ValidationError, BladPodrozy) as e:
+            raise BladProcesu(str(e)) from e
+        zolnierz = s.get(Zolnierz, d.id_zolnierza)
+        jednostka = s.get(Jednostka, zolnierz.id_jednostki)
+        skad, dokad = jednostka.miejscowosc, d.miejsce_docelowe
+        data = d.data_wyjazdu
+        if w.kierunek == "Powrót":
+            skad, dokad, data = dokad, skad, d.data_powrotu
+        przyjazd = datetime.combine(data, w.godzina_odjazdu) + timedelta(minutes=w.czas_min)
+        s.add(
+            Polaczenie(
+                id_polaczenia=w.id_polaczenia,
+                skad=skad,
+                dokad=dokad,
+                srodek_transportu=w.srodek_transportu,
+                przewoznik=w.przewoznik,
+                godzina_odjazdu=w.godzina_odjazdu,
+                godzina_przyjazdu=przyjazd.time(),
+                czas_min=w.czas_min,
+                koszt=w.koszt,
+                liczba_przesiadek=w.liczba_przesiadek,
+                punktualnosc=float(w.punktualnosc / 100),
+                ocena_bezpieczenstwa=w.ocena_bezpieczenstwa,
+            )
+        )
+        s.flush()
+        s.add(
+            Przejazd(
+                id_delegacji=d.id_delegacji,
+                kierunek=w.kierunek,
+                data_przejazdu=data,
+                id_polaczenia=w.id_polaczenia,
+                srodek_transportu=w.srodek_transportu,
+                koszt=w.koszt,
+                koszt_indywidualny=w.koszt,
+                status=StatusRezerwacji.PROPOZYCJA,
+                uzasadnienie="Oferta wprowadzona przez osobę akceptującą do porównania",
+                powod_zmiany=f"Źródło: {w.zrodlo}\nDodał: {k.dane['id_osoby']}",
+            )
+        )
+        s.flush()
+        rekomendowane = {w["id_przejazdu"] for w in zestawienie(s, d)["warianty"] if w["rekomendowany"]}
+        for r in przejazdy(s, d):
+            r.rekomendowany = r.id_przejazdu in rekomendowane
+        ktx.decyzja(
+            Decyzja(
+                typ="Dodanie wariantu podróży",
+                wybrany_wariant=f"{w.kierunek}: {w.id_polaczenia}",
+                uzasadnienie=f"Źródło: {w.zrodlo}; wprowadził: {k.dane['id_osoby']}",
+                decyzja_finansowa=True,
+            )
+        )

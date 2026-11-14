@@ -15,7 +15,15 @@ from sqlalchemy.orm import Session
 
 from ..messaging import Broker, Komunikat, Typ
 from ..models import Zolnierz
-from ..podroze import BladPodrozy, Kryterium, WyborPodrozy, sprawdz_decyzje, zestawienie
+from ..podroze import (
+    BladPodrozy,
+    Kryterium,
+    WariantPodrozyIn,
+    WyborPodrozy,
+    sprawdz_decyzje,
+    sprawdz_dodanie_wariantu,
+    zestawienie,
+)
 from .zaleznosci import dostep_do_podrozy, get_broker, get_sesja, sprawdz_csrf, uzytkownik_sesji
 
 router = APIRouter(tags=["Organizacja wyjazdu"])
@@ -45,6 +53,35 @@ async def przyjmij_wybor(s: Session, broker: Broker, id_delegacji: str, u: Zolni
         )
     )
     return {"przyjeto": True, "komunikat": "Decyzja przekazana do agenta transportu"}
+
+
+async def przyjmij_wariant(s: Session, broker: Broker, id_delegacji: str, u: Zolnierz, wariant: WariantPodrozyIn):
+    d = dostep_do_podrozy(s, id_delegacji, u, zapis=True)
+    try:
+        sprawdz_dodanie_wariantu(s, d)
+    except BladPodrozy as e:
+        raise HTTPException(409, str(e)) from e
+    await broker.publikuj(
+        Komunikat(
+            typ=Typ.PROPOZYCJA_TRANSPORTU,
+            id_delegacji=id_delegacji,
+            dane={**wariant.model_dump(mode="json"), "id_osoby": u.id_zolnierza},
+        )
+    )
+    return {"przyjeto": True}
+
+
+@router.post("/delegacje/{id_delegacji}/warianty-podrozy", status_code=202)
+async def dodaj_wariant_podrozy(
+    id_delegacji: str,
+    wariant: WariantPodrozyIn,
+    request: Request,
+    s: Session = Depends(get_sesja),
+    broker: Broker = Depends(get_broker),
+    uzytkownik: Zolnierz = Depends(uzytkownik_sesji),
+):
+    sprawdz_csrf(request, request.headers.get("X-CSRF-Token"))
+    return await przyjmij_wariant(s, broker, id_delegacji, uzytkownik, wariant)
 
 
 @router.post("/delegacje/{id_delegacji}/wybor-podrozy", status_code=202)
