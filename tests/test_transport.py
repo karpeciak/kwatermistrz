@@ -13,7 +13,7 @@ from kwatermistrz.agents.transport import AgentTransportu
 from kwatermistrz.api.main import app, get_broker
 from kwatermistrz.db import sesja
 from kwatermistrz.messaging import Komunikat, Typ
-from kwatermistrz.models import Delegacja, LogDecyzji, Polaczenie, Przejazd, Status, StatusRezerwacji
+from kwatermistrz.models import Delegacja, LogDecyzji, Polaczenie, Przedsiewziecie, Przejazd, Status, StatusRezerwacji
 from kwatermistrz.podroze import BladPodrozy, WyborPodrozy, ocena, sprawdz_decyzje, zestawienie
 from kwatermistrz.sesje import CIASTECZKO
 
@@ -29,7 +29,7 @@ def przygotuj(broker, **pola):
         id_delegacji="DEL-T",
         id_zolnierza="ZOL-003",
         id_zatwierdzajacego="ZOL-001",
-        id_przedsiewziecia="PRZ-01",
+        id_przedsiewziecia="PRZ-TEST-TRANSPORT",
         miejsce_docelowe="Toruń",
         data_wyjazdu=date(2026, 12, 7),
         data_powrotu=date(2026, 12, 11),
@@ -37,6 +37,19 @@ def przygotuj(broker, **pola):
         dane_wniosku={},
     )
     with sesja() as s:
+        # Scenariusz poprawnego wyboru musi mieć kurs docierający przed szkoleniem.
+        # PRZ-01 z seeda zaczyna się o 8:00, a POL-01 przyjeżdża dopiero o 8:45.
+        s.add(
+            Przedsiewziecie(
+                id_przedsiewziecia="PRZ-TEST-TRANSPORT",
+                nazwa="Szkolenie testowe transportu",
+                miejscowosc="Toruń",
+                data_rozpoczecia=date(2026, 12, 7),
+                data_zakonczenia=date(2026, 12, 11),
+                godzina_rozpoczecia=time(9),
+            )
+        )
+        s.flush()
         s.add(Delegacja(**(dane | pola)))
     return wykonaj(broker, Typ.ZADANIE_TRANSPORTU)
 
@@ -77,6 +90,15 @@ def test_ponowienie_zadania_nie_dubluje_propozycji(broker):
     wykonaj(broker, Typ.ZADANIE_TRANSPORTU)
     with sesja() as s:
         assert list(s.scalars(select(Przejazd.id_przejazdu))) == ids
+
+
+def test_wszystkie_kursy_spoznione_nie_daja_rekomendacji_tam(broker):
+    wynik = przygotuj(broker, id_przedsiewziecia="PRZ-01")
+    assert wynik.wynik == "Ostrzeżenie"
+    with sesja() as s:
+        tam = [w for w in zestawienie(s, s.get(Delegacja, "DEL-T"))["warianty"] if w["kierunek"] == "Tam"]
+        assert tam and all(w["spozniony"] and not w["rekomendowany"] for w in tam)
+    assert Typ.WYNIK_TRANSPORTU not in broker.typy()
 
 
 def test_zapis_obu_kierunkow_i_ponowienie(broker):
