@@ -1,52 +1,140 @@
 {% extends "baza.html" %}
 {% block tytul %}Nowy wniosek{% endblock %}
 {% block tresc %}
+{% set w = w or {} %}
+{% set bledy_pol = bledy_pol or {} %}
 <h2>Wniosek o wyjazd służbowy</h2>
 
-<form method="post" action="/app/wnioski/nowy">
+{# S22IT1S0P2-52: formularz wniosku – krok 1 z 2 (dane), krok 2 to podsumowanie przed złożeniem #}
+<p><small>Krok 1 z 2: dane wniosku · Krok 2: podsumowanie i złożenie</small></p>
+
+{% if bledy %}
+<div class="bledy" role="alert">
+  <strong>Wniosku nie można jeszcze złożyć – popraw zaznaczone pola:</strong>
+  <ul>{% for b in bledy %}<li>{{ b.komunikat }}</li>{% endfor %}</ul>
+</div>
+{% endif %}
+
+{% macro blad(pole) %}{% if bledy_pol.get(pole) %}<small class="blad" id="blad-{{ pole }}">{{ bledy_pol[pole] }}</small>{% endif %}{% endmacro %}
+{% macro aria(pole) %}{% if bledy_pol.get(pole) %} aria-invalid="true" aria-describedby="blad-{{ pole }}"{% endif %}{% endmacro %}
+
+<form method="post" action="/app/wnioski/nowy/podsumowanie" id="formularz-wniosku">
   <fieldset>
-    <legend><strong>Wnioskodawca</strong></legend>
-    <p>{{ uzytkownik.stopien }} {{ uzytkownik.imie_nazwisko }} · {{ uzytkownik.pododdzial or "" }} · {{ uzytkownik.id_jednostki }}</p>
+    <legend><strong>Wnioskodawca</strong> <small>(dane z ewidencji)</small></legend>
+    <p>{{ uzytkownik.stopien }} {{ uzytkownik.imie_nazwisko }}
+      {% if uzytkownik.pododdzial %}· {{ uzytkownik.pododdzial }}{% endif %}
+      · {{ jednostka.nazwa if jednostka else uzytkownik.id_jednostki }}</p>
   </fieldset>
 
   <label for="id_przedsiewziecia">Przedsięwzięcie z harmonogramu (opcjonalnie)
     <select id="id_przedsiewziecia" name="id_przedsiewziecia">
       <option value="">– inne, wpiszę dane poniżej –</option>
       {% for p in przedsiewziecia %}
-      <option value="{{ p.id_przedsiewziecia }}">{{ p.nazwa }} · {{ p.miejscowosc }} · {{ p.data_rozpoczecia.strftime("%d.%m") }}–{{ p.data_zakonczenia.strftime("%d.%m.%Y") }}</option>
+      <option value="{{ p.id_przedsiewziecia }}" data-cel="{{ p.nazwa }}" data-miejsce="{{ p.miejscowosc }}"
+              data-od="{{ p.data_rozpoczecia.isoformat() }}" data-do="{{ p.data_zakonczenia.isoformat() }}"
+              {% if w.get("id_przedsiewziecia") == p.id_przedsiewziecia %}selected{% endif %}>
+        {{ p.nazwa }} · {{ p.miejscowosc }} · {{ p.data_rozpoczecia.strftime("%d.%m") }}–{{ p.data_zakonczenia.strftime("%d.%m.%Y") }}</option>
       {% endfor %}
     </select>
-    <small>Puste pola poniżej uzupełnimy danymi wybranego przedsięwzięcia.</small>
+    <small>Wybór przedsięwzięcia uzupełni cel, miejsce i termin – możesz je potem zmienić.</small>
   </label>
 
-  <div class="grid">
-    <label>Cel wyjazdu <input name="cel_wyjazdu" placeholder="np. szkolenie, kurs, odprawa"></label>
-    <label>Miejsce docelowe <input name="miejsce_docelowe" placeholder="miejscowość, jednostka"></label>
-  </div>
-  <div class="grid">
-    <label>Data wyjazdu <input type="date" name="data_wyjazdu"></label>
-    <label>Data powrotu <input type="date" name="data_powrotu"></label>
-  </div>
-  <div class="grid">
-    <label>Podstawa – numer rozkazu <input name="podstawa_numer_rozkazu" placeholder="np. Rozkaz dzienny nr 215/2026"></label>
-    <label>Data rozkazu <input type="date" name="podstawa_data_rozkazu"></label>
-  </div>
-  <div class="grid">
-    <label>Preferowany transport
-      <select name="srodek_transportu">
-        <option value="kolej">kolej</option>
-        <option value="transport wojskowy">transport wojskowy</option>
-        <option value="pojazd służbowy">pojazd służbowy</option>
-        <option value="samochód prywatny">pojazd prywatny</option>
-      </select>
-    </label>
-    <label class="checkbox-w-siatce">
-      <input type="checkbox" name="potrzeba_zakwaterowania" value="true" checked>
-      Potrzebuję zakwaterowania
-    </label>
-  </div>
+  <fieldset>
+    <legend><strong>Cel i miejsce</strong></legend>
+    <div class="grid">
+      <label>Cel wyjazdu *
+        <input name="cel_wyjazdu" list="cele-wyjazdu" required value="{{ w.get('cel_wyjazdu') or '' }}"
+               placeholder="np. szkolenie, kurs, odprawa"{{ aria("cel_wyjazdu") }}>
+        {{ blad("cel_wyjazdu") }}
+      </label>
+      <label>Miejsce docelowe *
+        <input name="miejsce_docelowe" required value="{{ w.get('miejsce_docelowe') or '' }}"
+               placeholder="miejscowość, jednostka docelowa"{{ aria("miejsce_docelowe") }}>
+        {{ blad("miejsce_docelowe") }}
+      </label>
+    </div>
+    <datalist id="cele-wyjazdu">
+      {% for cel in ("szkolenie", "kurs", "ćwiczenia", "odprawa", "egzamin", "oddelegowanie") %}<option value="{{ cel }}">{% endfor %}
+    </datalist>
+  </fieldset>
 
-  <button type="submit">Złóż wniosek</button>
-  <small>Po złożeniu Agent Wniosków sprawdzi kompletność danych i przekaże wniosek przełożonemu.</small>
+  <fieldset>
+    <legend><strong>Termin</strong></legend>
+    <div class="grid">
+      <label>Data wyjazdu *
+        <input type="date" name="data_wyjazdu" id="data_wyjazdu" required value="{{ w.get('data_wyjazdu') or '' }}"{{ aria("data_wyjazdu") }}>
+        {{ blad("data_wyjazdu") }}
+      </label>
+      <label>Data powrotu *
+        <input type="date" name="data_powrotu" id="data_powrotu" required value="{{ w.get('data_powrotu') or '' }}"{{ aria("data_powrotu") }}>
+        {{ blad("data_powrotu") }}
+      </label>
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend><strong>Podstawa wyjazdu</strong></legend>
+    <div class="grid">
+      <label>Numer rozkazu *
+        <input name="podstawa_numer_rozkazu" required value="{{ w.get('podstawa_numer_rozkazu') or '' }}"
+               placeholder="np. Rozkaz dzienny nr 215/2026">
+      </label>
+      <label>Data rozkazu *
+        <input type="date" name="podstawa_data_rozkazu" required value="{{ w.get('podstawa_data_rozkazu') or '' }}">
+      </label>
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend><strong>Preferencje</strong></legend>
+    <div class="grid">
+      <label>Preferowany transport
+        <select name="srodek_transportu" id="srodek_transportu">
+          {% for wartosc, etykieta in (("kolej", "kolej"), ("transport wojskowy", "transport wojskowy"),
+                                       ("pojazd służbowy", "pojazd służbowy"), ("samochód prywatny", "pojazd prywatny")) %}
+          <option value="{{ wartosc }}" {% if w.get("srodek_transportu") == wartosc %}selected{% endif %}>{{ etykieta }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label class="checkbox-w-siatce">
+        <input type="checkbox" name="potrzeba_zakwaterowania" value="true"
+               {% if w.get("potrzeba_zakwaterowania", True) %}checked{% endif %}>
+        Potrzebuję zakwaterowania
+      </label>
+    </div>
+    {% set dt = w.get("dane_transportu") or {} %}
+    <div class="grid" id="dane-pojazdu" {% if w.get("srodek_transportu") != "samochód prywatny" %}hidden{% endif %}>
+      <label>Numer rejestracyjny pojazdu
+        <input name="nr_rejestracyjny" value="{{ dt.get('nr_rejestracyjny') or '' }}"{{ aria("dane_transportu.nr_rejestracyjny") }}>
+        {{ blad("dane_transportu.nr_rejestracyjny") }}
+      </label>
+      <label>Pojemność silnika (cm³)
+        <input name="pojemnosc_silnika" inputmode="numeric" value="{{ dt.get('pojemnosc_silnika') or '' }}"{{ aria("dane_transportu.pojemnosc_silnika") }}>
+        {{ blad("dane_transportu.pojemnosc_silnika") }}
+      </label>
+    </div>
+  </fieldset>
+
+  <p><small>* pole wymagane</small></p>
+  <button type="submit">Dalej – podsumowanie</button>
 </form>
+
+<script>
+  (() => {
+    const f = document.getElementById("formularz-wniosku");
+    const pole = (n) => f.elements[n];
+    pole("id_przedsiewziecia").addEventListener("change", (e) => {
+      const o = e.target.selectedOptions[0];
+      if (!o || !o.value) return;
+      for (const [nazwa, klucz] of [["cel_wyjazdu", "cel"], ["miejsce_docelowe", "miejsce"], ["data_wyjazdu", "od"], ["data_powrotu", "do"]]) {
+        if (!pole(nazwa).value) pole(nazwa).value = o.dataset[klucz];
+      }
+      pole("data_powrotu").min = pole("data_wyjazdu").value;
+    });
+    pole("data_wyjazdu").addEventListener("change", () => { pole("data_powrotu").min = pole("data_wyjazdu").value; });
+    pole("srodek_transportu").addEventListener("change", (e) => {
+      document.getElementById("dane-pojazdu").hidden = e.target.value !== "samochód prywatny";
+    });
+  })();
+</script>
 {% endblock %}

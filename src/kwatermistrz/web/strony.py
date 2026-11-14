@@ -40,6 +40,7 @@ from ..models import (
     Agent,
     Delegacja,
     DokumentKosztowy,
+    Jednostka,
     LogDecyzji,
     LogOperacji,
     Przedsiewziecie,
@@ -47,6 +48,7 @@ from ..models import (
     Status,
     Zolnierz,
 )
+from ..walidacja import parsuj_date, waliduj_wniosek
 
 KATALOG = Path(__file__).parent
 CIASTECZKO = "kwatermistrz_uzytkownik"
@@ -228,7 +230,8 @@ def pulpit(request: Request, s: Session = Depends(get_sesja), uzytkownik: Zolnie
 @router.get("/wnioski/nowy", response_class=HTMLResponse)
 def nowy_wniosek(request: Request, s: Session = Depends(get_sesja), uzytkownik: Zolnierz = Depends(biezacy_uzytkownik)):
     przedsiewziecia = s.scalars(select(Przedsiewziecie).order_by(Przedsiewziecie.data_rozpoczecia)).all()
-    return strona(request, s, "nowy_wniosek.html", uzytkownik, przedsiewziecia=przedsiewziecia)
+    jednostka = s.get(Jednostka, uzytkownik.id_jednostki)
+    return strona(request, s, "nowy_wniosek.html", uzytkownik, przedsiewziecia=przedsiewziecia, jednostka=jednostka)
 
 
 @router.post("/wnioski/nowy")
@@ -242,6 +245,8 @@ async def zloz_nowy_wniosek(
     podstawa_data_rozkazu: str = Form(""),
     srodek_transportu: str = Form("kolej"),
     potrzeba_zakwaterowania: bool = Form(False),
+    nr_rejestracyjny: str = Form(""),
+    pojemnosc_silnika: str = Form(""),
     s: Session = Depends(get_sesja),
     broker: Broker = Depends(get_broker),
     uzytkownik: Zolnierz = Depends(biezacy_uzytkownik),
@@ -262,11 +267,65 @@ async def zloz_nowy_wniosek(
         data_powrotu=data_powrotu or None,
         srodek_transportu=srodek_transportu or None,
         potrzeba_zakwaterowania=potrzeba_zakwaterowania,
+        dane_transportu=dane_pojazdu(srodek_transportu, nr_rejestracyjny, pojemnosc_silnika),
         podstawa_numer_rozkazu=podstawa_numer_rozkazu or None,
         podstawa_data_rozkazu=podstawa_data_rozkazu or None,
     )
     d = await zarejestruj_wniosek(s, broker, wniosek)
     return RedirectResponse(f"/app/wnioski/{d.id_delegacji}", status_code=303)
+
+
+def dane_pojazdu(srodek_transportu: str, nr_rejestracyjny: str, pojemnosc_silnika: str) -> dict[str, str]:
+    """Dane pojazdu prywatnego (S22IT1S0P2-12) – tylko gdy wybrano ten środek transportu."""
+    if srodek_transportu != "samochód prywatny":
+        return {}
+    dane = {"nr_rejestracyjny": nr_rejestracyjny.strip(), "pojemnosc_silnika": pojemnosc_silnika.strip()}
+    return {pole: wartosc for pole, wartosc in dane.items() if wartosc}
+
+
+@router.post("/wnioski/nowy/podsumowanie", response_class=HTMLResponse)
+def podsumowanie_wniosku(
+    request: Request,
+    popraw: bool = False,
+    id_przedsiewziecia: str = Form(""),
+    cel_wyjazdu: str = Form(""),
+    miejsce_docelowe: str = Form(""),
+    data_wyjazdu: str = Form(""),
+    data_powrotu: str = Form(""),
+    podstawa_numer_rozkazu: str = Form(""),
+    podstawa_data_rozkazu: str = Form(""),
+    srodek_transportu: str = Form("kolej"),
+    potrzeba_zakwaterowania: bool = Form(False),
+    nr_rejestracyjny: str = Form(""),
+    pojemnosc_silnika: str = Form(""),
+    s: Session = Depends(get_sesja),
+    uzytkownik: Zolnierz = Depends(biezacy_uzytkownik),
+):
+    """S22IT1S0P2-52: sprawdzenie kompletności i podsumowanie przed złożeniem – wniosek nie jest jeszcze zapisywany."""
+    p = s.get(Przedsiewziecie, id_przedsiewziecia) if id_przedsiewziecia else None
+    w = {
+        "id_przedsiewziecia": p.id_przedsiewziecia if p else "",
+        "cel_wyjazdu": cel_wyjazdu.strip() or (p.nazwa if p else ""),
+        "miejsce_docelowe": miejsce_docelowe.strip() or (p.miejscowosc if p else ""),
+        "data_wyjazdu": data_wyjazdu or (p.data_rozpoczecia.isoformat() if p else ""),
+        "data_powrotu": data_powrotu or (p.data_zakonczenia.isoformat() if p else ""),
+        "podstawa_numer_rozkazu": podstawa_numer_rozkazu.strip(),
+        "podstawa_data_rozkazu": podstawa_data_rozkazu,
+        "srodek_transportu": srodek_transportu,
+        "potrzeba_zakwaterowania": potrzeba_zakwaterowania,
+        "dane_transportu": dane_pojazdu(srodek_transportu, nr_rejestracyjny, pojemnosc_silnika),
+    }
+    jednostka = s.get(Jednostka, uzytkownik.id_jednostki)
+    bledy = [] if popraw else waliduj_wniosek(w, jednostka=uzytkownik.id_jednostki)
+    if popraw or bledy:
+        # scenariusz 3a–4a: wskazanie brakujących lub błędnych danych, formularz z wpisanymi już wartościami
+        przedsiewziecia = s.scalars(select(Przedsiewziecie).order_by(Przedsiewziecie.data_rozpoczecia)).all()
+        bledy_pol = {b.pole: b.komunikat for b in bledy}
+        kontekst = dict(przedsiewziecia=przedsiewziecia, jednostka=jednostka, w=w, bledy=bledy, bledy_pol=bledy_pol)
+        return strona(request, s, "nowy_wniosek.html", uzytkownik, **kontekst)
+    liczba_dni = (parsuj_date(w["data_powrotu"]) - parsuj_date(w["data_wyjazdu"])).days + 1
+    kontekst = dict(w=w, jednostka=jednostka, przedsiewziecie=p, liczba_dni=liczba_dni)
+    return strona(request, s, "podsumowanie_wniosku.html", uzytkownik, **kontekst)
 
 
 def dane_wniosku(s: Session, id_delegacji: str, uzytkownik: Zolnierz) -> dict:
