@@ -89,7 +89,11 @@ def oczekujace_na_decyzje(s: Session, id_przelozonego: str) -> list[Delegacja]:
     return list(
         s.scalars(
             select(Delegacja)
-            .where(Delegacja.status == Status.W_AKCEPTACJI, Delegacja.id_zatwierdzajacego == id_przelozonego)
+            .where(
+                Delegacja.status == Status.W_AKCEPTACJI,
+                Delegacja.decyzja.is_(None),
+                Delegacja.id_zatwierdzajacego == id_przelozonego,
+            )
             .order_by(Delegacja.data_zmiany_statusu)
         )
     )

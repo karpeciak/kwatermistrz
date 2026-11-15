@@ -9,12 +9,13 @@ from decimal import Decimal
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 from kwatermistrz.agents import AGENCI
 from kwatermistrz.api.main import app, get_broker
 from kwatermistrz.db import sesja
-from kwatermistrz.messaging import Typ
-from kwatermistrz.models import Delegacja, Jednostka, Status
+from kwatermistrz.messaging import Komunikat, Typ
+from kwatermistrz.models import Delegacja, Jednostka, LogOperacji, Status
 from kwatermistrz.web.strony import CIASTECZKO
 
 PRZELOZONY = "ZOL-001"  # przełożony ZOL-003 i ZOL-004 w danych początkowych, jednostka JW-1001
@@ -36,7 +37,7 @@ def dodaj_wniosek(id_d: str = "DEL-D-1", koszt: str = "470.00", **pola) -> str:
                 id_delegacji=id_d,
                 id_zolnierza=pola.pop("id_zolnierza", "ZOL-003"),
                 dane_wniosku={"cel_wyjazdu": "Szkolenie", "miejsce_docelowe": "Toruń"},
-                status=Status.W_AKCEPTACJI,
+                status=pola.pop("status", Status.W_AKCEPTACJI),
                 id_zatwierdzajacego=pola.pop("id_zatwierdzajacego", PRZELOZONY),
                 szacowany_koszt=Decimal(koszt),
                 **pola,
@@ -69,6 +70,12 @@ def delegacja(id_d: str) -> Delegacja:
 def decyduj_api(klient, id_d: str, decyzja: str, uzasadnienie: str | None = None, id_osoby: str = PRZELOZONY):
     dane = {"id_osoby": id_osoby, "decyzja": decyzja, "uzasadnienie": uzasadnienie}
     return klient.post(f"/delegacje/{id_d}/decyzja", json=dane)
+
+
+def wykonaj_decyzje(broker, komunikat: Komunikat):
+    agent = AGENCI["zatwierdzenia"](broker)
+    funkcja, operacja = agent.obslugi()[Typ.DECYZJA_PRZELOZONEGO]
+    return asyncio.run(agent.wykonaj(komunikat, funkcja, operacja))
 
 
 # ---------------------------------------------------------------- skutki decyzji
@@ -159,6 +166,51 @@ def test_decyzja_osoby_nieuprawnionej_jest_pomijana(klient, broker):
     assert wykorzystany_budzet() == Decimal("0")
 
 
+def test_decyzja_dla_wniosku_w_nieaktualnym_statusie_jest_pomijana(broker):
+    id_d = dodaj_wniosek(status=Status.ZATWIERDZONY)
+    ustaw_budzet("5000")
+    komunikat = Komunikat(
+        typ=Typ.DECYZJA_PRZELOZONEGO,
+        id_delegacji=id_d,
+        dane={"id_osoby": PRZELOZONY, "decyzja": "Zgoda", "koszt": "470.00"},
+    )
+
+    wynik = wykonaj_decyzje(broker, komunikat)
+
+    d = delegacja(id_d)
+    with sesja() as s:
+        wpis = s.scalar(select(LogOperacji).where(LogOperacji.id_komunikatu == komunikat.id))
+    assert wynik.wynik == "Ostrzeżenie" and "nie oczekuje" in wynik.opis
+    assert wpis is not None and wpis.wynik == "Ostrzeżenie"
+    assert d.status == Status.ZATWIERDZONY and d.decyzja is None
+    assert wykorzystany_budzet() == Decimal("0")
+    assert broker.wyslane == []
+
+
+def test_ponowienie_po_zapisanej_decyzji_nie_powiela_skutkow_ani_wyniku(broker):
+    id_d = dodaj_wniosek()
+    ustaw_budzet("5000")
+    pierwsza = Komunikat(
+        typ=Typ.DECYZJA_PRZELOZONEGO,
+        id_delegacji=id_d,
+        dane={"id_osoby": PRZELOZONY, "decyzja": "Zgoda", "koszt": "470.00"},
+    )
+    ponowiona = Komunikat(
+        typ=Typ.DECYZJA_PRZELOZONEGO,
+        id_delegacji=id_d,
+        dane={"id_osoby": PRZELOZONY, "decyzja": "Odmowa", "uzasadnienie": "zmiana zdania"},
+    )
+
+    pierwszy_wynik = wykonaj_decyzje(broker, pierwsza)
+    drugi_wynik = wykonaj_decyzje(broker, ponowiona)
+
+    d = delegacja(id_d)
+    assert pierwszy_wynik.wynik == "Sukces" and drugi_wynik.wynik == "Ostrzeżenie"
+    assert d.decyzja == "Zgoda" and d.uzasadnienie_decyzji is None
+    assert wykorzystany_budzet() == Decimal("470.00")
+    assert broker.typy() == [Typ.WYNIK_ZATWIERDZENIA]
+
+
 def test_api_odrzuca_nieznana_decyzje_i_nieistniejacy_wniosek(klient, broker):
     id_d = dodaj_wniosek()
     assert decyduj_api(klient, id_d, "Może").status_code == 422
@@ -200,6 +252,16 @@ def test_wniosek_juz_rozpatrzony_nie_oczekuje_na_decyzje(klient, broker):
     r = klient.post("/app/do-zatwierdzenia", data={"wnioski": [id_d], "decyzja": "Odmowa", "uzasadnienie": "x"})
     assert "nie oczekuje już na Twoją decyzję" in r.text
     assert delegacja(id_d).status == Status.ZATWIERDZONY
+
+
+def test_zapisana_decyzja_nie_jest_ponownie_przekazywana_z_interfejsu(klient, broker):
+    id_d = dodaj_wniosek(decyzja="Zgoda")
+
+    r = klient.post(f"/app/do-zatwierdzenia/{id_d}", data={"decyzja": "Zgoda"})
+
+    assert r.status_code == 200 and "nie oczekuje już na Twoją decyzję" in r.text
+    assert delegacja(id_d).status == Status.W_AKCEPTACJI
+    assert broker.wyslane == []
 
 
 # ---------------------------------------------------------------- budżet jednostki

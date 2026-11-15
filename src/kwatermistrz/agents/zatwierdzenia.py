@@ -51,6 +51,9 @@ class AgentZatwierdzen(Agent):
         if id_osoby != d.id_zatwierdzajacego:
             ktx.ostrzezenie(f"{id_osoby} nie jest osobą zatwierdzającą tego wniosku")
             return
+        if d.status != Status.W_AKCEPTACJI:
+            ktx.ostrzezenie(f"Wniosek nie oczekuje na decyzję (status: {d.status}) – żądanie pominięte")
+            return
         if k.dane.get("przekroczenie_budzetu"):
             # S22IT1S0P2-35, 4b: łączny koszt ponad dostępny budżet – zatwierdzenie czeka na komórkę finansową
             ktx.operacja = "Wstrzymanie zatwierdzenia – przekroczenie budżetu"
