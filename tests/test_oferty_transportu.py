@@ -11,6 +11,7 @@ from uuid import uuid4
 
 import pytest
 from fastapi import HTTPException
+from pomoc_brokera import BrokerTestowy
 from pydantic import ValidationError
 from sqlalchemy import select
 from starlette.requests import Request
@@ -20,7 +21,6 @@ from kwatermistrz.api.schemas import WniosekIn
 from kwatermistrz.api.wnioski import zarejestruj_wniosek
 from kwatermistrz.config import settings
 from kwatermistrz.db import sesja
-from kwatermistrz.lokalnie import BrokerLokalny
 from kwatermistrz.messaging import Komunikat, Typ
 from kwatermistrz.models import Delegacja, LogDecyzji, Polaczenie, Przejazd, StatusRezerwacji, Zolnierz
 from kwatermistrz.podroze import BladPodrozy, WariantPodrozyIn, WyborPodrozy, sprawdz_decyzje, zestawienie
@@ -137,7 +137,7 @@ def request_form(data=None, csrf=True):
 
 
 def test_bydgoszcz_pokazuje_dalsze_dzialania_zamiast_pustych_tabel():
-    broker = BrokerLokalny()
+    broker = BrokerTestowy()
     ident = nowy_wniosek(broker)
     with sesja() as s:
         dane = zestawienie(s, s.get(Delegacja, ident))
@@ -150,7 +150,7 @@ def test_bydgoszcz_pokazuje_dalsze_dzialania_zamiast_pustych_tabel():
 
 
 def test_uzupelnienie_ofert_bydgoszczy_prowadzi_do_zapisu_wyboru_i_audytu():
-    broker = BrokerLokalny()
+    broker = BrokerTestowy()
     ident = nowy_wniosek(broker)
     tam, powrot = oferta(), oferta("Powrót")
     dodaj(broker, ident, tam)
@@ -170,7 +170,7 @@ def test_uzupelnienie_ofert_bydgoszczy_prowadzi_do_zapisu_wyboru_i_audytu():
 
 
 def test_reczna_oferta_nie_jest_globalna_oferta_dla_innego_wniosku():
-    broker = BrokerLokalny()
+    broker = BrokerTestowy()
     pierwszy = nowy_wniosek(broker)
     dodaj(broker, pierwszy, oferta())
     drugi = nowy_wniosek(broker)
@@ -179,7 +179,7 @@ def test_reczna_oferta_nie_jest_globalna_oferta_dla_innego_wniosku():
 
 
 def test_ponowienie_dodania_nie_dubluje_oferty():
-    broker = BrokerLokalny()
+    broker = BrokerTestowy()
     ident = nowy_wniosek(broker)
     wariant = oferta()
     dodaj(broker, ident, wariant)
@@ -189,14 +189,14 @@ def test_ponowienie_dodania_nie_dubluje_oferty():
 
 
 def test_dopasowanie_miasta_pomija_wielkosc_liter_i_nadmiarowe_spacje():
-    broker = BrokerLokalny()
+    broker = BrokerTestowy()
     ident = nowy_wniosek(broker, "  tOrUń  ", "2026-12-06")
     with sesja() as s:
         assert zestawienie(s, s.get(Delegacja, ident))["mozna_zatwierdzic"]
 
 
 def test_brak_ofert_mozna_trwale_przekazac_do_uzgodnienia():
-    broker = BrokerLokalny()
+    broker = BrokerTestowy()
     ident = nowy_wniosek(broker)
     with sesja() as s:
         zakoncz(
@@ -240,7 +240,7 @@ def test_nieprawidlowe_oferty_sa_odrzucane(pola):
 
 
 def test_blady_formularz_oferty_zachowuje_dane_i_pokazuje_blad_html():
-    broker = BrokerLokalny()
+    broker = BrokerTestowy()
     ident = nowy_wniosek(broker)
     fields = oferta().model_dump(mode="json") | {"koszt": "-1", "przewoznik": "Moja wpisana nazwa"}
     request, _ = request_form(fields)
@@ -253,7 +253,7 @@ def test_blady_formularz_oferty_zachowuje_dane_i_pokazuje_blad_html():
 
 
 def test_formularz_oferty_zapisuje_wariant_i_przekierowuje():
-    broker = BrokerLokalny()
+    broker = BrokerTestowy()
     ident = nowy_wniosek(broker)
     request, _ = request_form(oferta().model_dump(mode="json"))
     with sesja() as s:
@@ -264,7 +264,7 @@ def test_formularz_oferty_zapisuje_wariant_i_przekierowuje():
 
 
 def test_formularz_wyboru_zachowuje_uzasadnienie_po_bledzie():
-    broker = BrokerLokalny()
+    broker = BrokerTestowy()
     ident = nowy_wniosek(broker)
     dodaj(broker, ident, oferta())
     request, csrf = request_form()
@@ -287,7 +287,7 @@ def test_formularz_wyboru_zachowuje_uzasadnienie_po_bledzie():
 
 
 def test_osoba_obca_i_brak_csrf_nie_pozwalaja_dodac_oferty():
-    broker = BrokerLokalny()
+    broker = BrokerTestowy()
     ident = nowy_wniosek(broker)
     with sesja() as s:
         with pytest.raises(HTTPException) as e:
@@ -300,7 +300,7 @@ def test_osoba_obca_i_brak_csrf_nie_pozwalaja_dodac_oferty():
 
 
 def test_zrodlo_wpisane_przez_uzytkownika_jest_escapowane_w_html():
-    broker = BrokerLokalny()
+    broker = BrokerTestowy()
     ident = nowy_wniosek(broker)
     dodaj(broker, ident, oferta(zrodlo="<script>alert(1)</script>"))
     with sesja() as s:
@@ -309,7 +309,7 @@ def test_zrodlo_wpisane_przez_uzytkownika_jest_escapowane_w_html():
 
 
 def test_czas_przyjazdu_oferty_przez_polnoc_ma_wlasciwa_date():
-    broker = BrokerLokalny()
+    broker = BrokerTestowy()
     ident = nowy_wniosek(broker)
     dodaj(broker, ident, oferta(godzina_odjazdu="23:00", czas_min=180))
     with sesja() as s:
@@ -319,7 +319,7 @@ def test_czas_przyjazdu_oferty_przez_polnoc_ma_wlasciwa_date():
 
 
 def test_formularz_wyboru_po_uzupelnieniu_obu_kierunkow_zapisuje_decyzje():
-    broker = BrokerLokalny()
+    broker = BrokerTestowy()
     ident = nowy_wniosek(broker)
     dodaj(broker, ident, oferta())
     dodaj(broker, ident, oferta("Powrót"))
@@ -348,7 +348,7 @@ def test_formularz_wyboru_po_uzupelnieniu_obu_kierunkow_zapisuje_decyzje():
 
 
 def test_agent_sam_odrzuca_nieuprawnione_dodanie_oferty():
-    broker = BrokerLokalny()
+    broker = BrokerTestowy()
     ident = nowy_wniosek(broker)
     zakoncz(
         broker.publikuj(
@@ -364,7 +364,7 @@ def test_agent_sam_odrzuca_nieuprawnione_dodanie_oferty():
 
 
 def test_krakow_z_innym_terminem_i_pojazdem_jednostki_nie_rekomenduje_pociagu():
-    broker = BrokerLokalny()
+    broker = BrokerTestowy()
     ident = nowy_wniosek(
         broker,
         "Kraków",
@@ -386,7 +386,7 @@ def test_krakow_z_innym_terminem_i_pojazdem_jednostki_nie_rekomenduje_pociagu():
 
 @pytest.mark.parametrize("zgoda,uzasadnienie", [(False, "Zgoda na kolej"), (True, ""), (False, "")])
 def test_zmiana_transportu_wymaga_zarowno_zgody_jak_i_uzasadnienia(zgoda, uzasadnienie):
-    broker = BrokerLokalny()
+    broker = BrokerTestowy()
     ident = nowy_wniosek(broker, "Kraków", srodek_transportu="pojazd służbowy")
     with sesja() as s:
         d = s.get(Delegacja, ident)
@@ -397,7 +397,7 @@ def test_zmiana_transportu_wymaga_zarowno_zgody_jak_i_uzasadnienia(zgoda, uzasad
 
 
 def test_swiadoma_zmiana_transportu_zapisuje_wybor_bez_bledu_obcego_terminu():
-    broker = BrokerLokalny()
+    broker = BrokerTestowy()
     ident = nowy_wniosek(
         broker,
         "Kraków",
@@ -436,7 +436,7 @@ def test_swiadoma_zmiana_transportu_zapisuje_wybor_bez_bledu_obcego_terminu():
 
 
 def test_pojazd_jednostki_ma_pierwszenstwo_przed_tansza_koleja():
-    broker = BrokerLokalny()
+    broker = BrokerTestowy()
     ident = nowy_wniosek(broker, "Toruń", "2026-12-06", srodek_transportu="pojazd służbowy")
     with sesja() as s:
         dane = zestawienie(s, s.get(Delegacja, ident))
@@ -446,7 +446,7 @@ def test_pojazd_jednostki_ma_pierwszenstwo_przed_tansza_koleja():
 
 
 def test_potwierdzenie_pojazdu_dla_krakowa_pozwala_wybrac_zadany_transport():
-    broker = BrokerLokalny()
+    broker = BrokerTestowy()
     ident = nowy_wniosek(
         broker,
         "Kraków",
@@ -476,7 +476,7 @@ def test_potwierdzenie_pojazdu_dla_krakowa_pozwala_wybrac_zadany_transport():
 
 
 def test_jeden_dzien_nie_rekomenduje_powrotu_przed_dojazdem_pojazdu():
-    broker = BrokerLokalny()
+    broker = BrokerTestowy()
     ident = nowy_wniosek(
         broker,
         "Toruń",
@@ -495,7 +495,7 @@ def test_jeden_dzien_nie_rekomenduje_powrotu_przed_dojazdem_pojazdu():
 
 
 def test_rekomendowana_para_wybiera_pozniejszy_powrot_i_daje_sie_zapisac():
-    broker = BrokerLokalny()
+    broker = BrokerTestowy()
     ident = nowy_wniosek(broker, data_powrotu="2026-11-15")
     dodaj(broker, ident, oferta(godzina_odjazdu="08:00", czas_min=180))
     dodaj(broker, ident, oferta("Powrót", godzina_odjazdu="07:00", koszt="10.00"))
@@ -515,7 +515,7 @@ def test_rekomendowana_para_wybiera_pozniejszy_powrot_i_daje_sie_zapisac():
 
 
 def test_blad_czasu_wskazuje_konkretne_godziny_zamiast_ogolnego_komunikatu():
-    broker = BrokerLokalny()
+    broker = BrokerTestowy()
     ident = nowy_wniosek(broker, data_powrotu="2026-11-15")
     dodaj(broker, ident, oferta(godzina_odjazdu="16:00", czas_min=150))
     dodaj(broker, ident, oferta("Powrót", godzina_odjazdu="17:00"))

@@ -7,11 +7,11 @@ logiki i renderowania HTML; nie zastępuje testu HTTP ani silnika przeglądarki.
 from html.parser import HTMLParser
 
 import pytest
+from pomoc_brokera import BrokerTestowy
 from test_oferty_transportu import nowy_wniosek, rekomendowane, request_form, zakoncz
 
 from kwatermistrz.api.zatwierdzenia import decyzja_zbiorcza
 from kwatermistrz.db import sesja
-from kwatermistrz.lokalnie import BrokerLokalny
 from kwatermistrz.models import Delegacja, Jednostka, Status, Zolnierz
 from kwatermistrz.podroze import WyborPodrozy
 from kwatermistrz.web.strony import (
@@ -64,7 +64,7 @@ class WidocznyTekst(HTMLParser):
     "miejsce,transport", [("Bydgoszcz", "kolej"), ("Kraków", "pojazd służbowy"), ("Toruń", "kolej")]
 )
 def test_podroz_ma_jeden_glowny_komunikat_i_ukryte_szczegoly(miejsce, transport):
-    broker = BrokerLokalny()
+    broker = BrokerTestowy()
     ident = nowy_wniosek(broker, miejsce, srodek_transportu=transport)
     with sesja() as s:
         html = widok_podrozy(ident, request_form()[0], s, s.get(Zolnierz, "ZOL-001")).body.decode()
@@ -80,7 +80,7 @@ def test_podroz_ma_jeden_glowny_komunikat_i_ukryte_szczegoly(miejsce, transport)
 
 
 def test_blad_zastepuje_komunikat_stanu_i_zachowuje_wpisane_dane():
-    broker = BrokerLokalny()
+    broker = BrokerTestowy()
     ident = nowy_wniosek(broker)
     with sesja() as s:
         html = widok_podrozy(
@@ -129,7 +129,7 @@ def pola_wniosku():
 
 
 def test_podsumowanie_zlozenie_zatwierdzenie_budzet_i_wybor_po_scaleniu_main():
-    broker = BrokerLokalny()
+    broker = BrokerTestowy()
     request = request_form()[0]
     pola = pola_wniosku()
     with sesja() as s:
@@ -165,7 +165,7 @@ def test_oczekiwanie_na_wybor_czlowieka_nie_jest_nieaktualnym_statusem():
 
     from kwatermistrz.db import teraz
 
-    broker = BrokerLokalny()
+    broker = BrokerTestowy()
     ident = nowy_wniosek(broker, "Toruń", "2026-12-06")
     with sesja() as s:
         d = s.get(Delegacja, ident)

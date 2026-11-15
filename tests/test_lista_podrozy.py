@@ -4,13 +4,13 @@ import asyncio
 
 import pytest
 from fastapi.testclient import TestClient
+from pomoc_brokera import BrokerTestowy
 from pomoc_sesji import zaloguj_z_csrf
 
 from kwatermistrz.api.main import app, get_broker
 from kwatermistrz.api.schemas import WniosekIn
 from kwatermistrz.api.wnioski import zarejestruj_wniosek
 from kwatermistrz.db import sesja
-from kwatermistrz.lokalnie import BrokerLokalny
 from kwatermistrz.messaging import Komunikat, Typ
 from kwatermistrz.models import Delegacja, Status, Zolnierz
 from kwatermistrz.podroze import zestawienie
@@ -47,7 +47,7 @@ async def wlasny_wniosek(broker):
 
 
 def test_wlasny_wniosek_przechodzi_do_wyboru_i_pokazuje_co_blokuje_organizacje():
-    broker = BrokerLokalny()
+    broker = BrokerTestowy()
     identyfikator = asyncio.run(wlasny_wniosek(broker))
     with sesja() as s:
         d = s.get(Delegacja, identyfikator)
@@ -79,7 +79,7 @@ def test_wlasny_wniosek_przechodzi_do_wyboru_i_pokazuje_co_blokuje_organizacje()
 
 @pytest.fixture
 def klient_lokalny():
-    broker = BrokerLokalny()
+    broker = BrokerTestowy()
     app.dependency_overrides[get_broker] = lambda: broker
     with TestClient(app, follow_redirects=False) as klient:
         yield klient
