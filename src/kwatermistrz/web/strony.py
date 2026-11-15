@@ -11,7 +11,7 @@ Strony do rozbudowy w historyjkach sprintu 1:
 - S22IT1S0P2-36, -20, -43 rozliczenie → nowa strona `rozliczenie.html`.
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Annotated
 from uuid import uuid4
@@ -30,9 +30,16 @@ from ..api.rozliczenia import KOMUNIKAT_PRZYJETY, DokumentKosztowyIn, przyjmij_d
 from ..api.schemas import WniosekIn
 from ..api.wnioski import zarejestruj_wniosek
 from ..api.zaleznosci import dostep_do_podrozy, get_broker, get_sesja, sprawdz_csrf
+from ..api.zatwierdzenia import (
+    budzet_jednostki,
+    decyzja_zbiorcza,
+    koszt_delegacji,
+    oczekujace_na_decyzje,
+    wstrzymane_z_powodu_budzetu,
+)
 from ..config import settings
 from ..db import teraz
-from ..messaging import Broker, Komunikat, Typ
+from ..messaging import Broker
 from ..miejscowosci import BladMiejscowosci, ZrodloNiedostepne, szukaj_miejscowosci
 from ..models import (
     Agent,
@@ -41,7 +48,6 @@ from ..models import (
     Jednostka,
     LogDecyzji,
     LogOperacji,
-    Polaczenie,
     Przedsiewziecie,
     Przejazd,
     Rozliczenie,
@@ -56,10 +62,10 @@ from ..podroze import (
     WariantPodrozyIn,
     WyborPodrozy,
     decyzja_do_uzgodnienia,
-    nazwa_miejscowosci,
     zestawienie,
 )
 from ..sesje import CIASTECZKO, CZAS_SESJI, odczytaj_sesje, token_csrf, utworz_sesje
+from ..walidacja import parsuj_date, waliduj_wniosek
 
 KATALOG = Path(__file__).parent
 STREFA = ZoneInfo("Europe/Warsaw")
@@ -67,6 +73,37 @@ STREFA = ZoneInfo("Europe/Warsaw")
 # Sam status nie potwierdza pracy agenta. Krótkie odpytywanie służy oczekiwaniu na odpowiedź.
 ETAPY_W_TOKU = {Status.ZLOZONY, Status.ZATWIERDZONY}
 ETAPY_PODROZY = (Status.ZATWIERDZONY, Status.ZORGANIZOWANY, Status.W_TRAKCIE, Status.DO_ROZLICZENIA, Status.ROZLICZONY)
+
+# S22IT1S0P2-32: ścieżka etapów obsługi wniosku i statusy boczne
+ETAPY_PROCESU = [
+    Status.ZLOZONY,
+    Status.W_AKCEPTACJI,
+    Status.ZATWIERDZONY,
+    Status.ZORGANIZOWANY,
+    Status.W_TRAKCIE,
+    Status.DO_ROZLICZENIA,
+    Status.ROZLICZONY,
+]
+# Status boczny → etap ścieżki, na którym zatrzymał się wniosek
+ETAP_STATUSU_BOCZNEGO = {Status.DO_UZUPELNIENIA: Status.ZLOZONY, Status.ODRZUCONY: Status.W_AKCEPTACJI}
+# Nazwy operacji Agenta Zatwierdzeń (agents/zatwierdzenia.py) – daty eskalacji bierzemy z logu operacji
+OPERACJA_PRZYPOMNIENIA = "Przypomnienie o oczekującym wniosku"
+OPERACJA_PRZEKAZANIA = "Przekazanie wniosku zastępcy"
+# Po tylu minutach bez aktywności agentów status „w toku” może być nieaktualny (S22IT1S0P2-32, scenariusz 3a)
+NIEAKTUALNY_PO = timedelta(minutes=10)
+# Słownik statusów delegacji (S22IT1S0P2-32) – co oznacza każdy etap obsługi, w języku wnioskodawcy
+SLOWNIK_STATUSOW = {
+    Status.ROBOCZY: "Wersja robocza – wniosek nie został jeszcze złożony.",
+    Status.ZLOZONY: "Wniosek wpłynął do systemu – agenci sprawdzają jego kompletność i poprawność.",
+    Status.DO_UZUPELNIENIA: "Wniosek wymaga poprawek – uzupełnij wskazane dane i złóż go ponownie.",
+    Status.W_AKCEPTACJI: "Wniosek czeka na decyzję przełożonego.",
+    Status.ZATWIERDZONY: "Przełożony zgodził się na wyjazd – trwa przygotowanie polecenia, przejazdu i noclegu.",
+    Status.ODRZUCONY: "Przełożony nie wyraził zgody na wyjazd.",
+    Status.ZORGANIZOWANY: "Wyjazd jest przygotowany – polecenie wyjazdu, przejazd i nocleg są gotowe.",
+    Status.W_TRAKCIE: "Trwa wyjazd służbowy.",
+    Status.DO_ROZLICZENIA: "Wyjazd się zakończył – złóż rozliczenie z dokumentami kosztowymi.",
+    Status.ROZLICZONY: "Rozliczenie zostało sprawdzone i przekazane do komórki finansowej.",
+}
 WYNIK_DOKUMENT_PRZYJETY = "dokument-przyjety"
 
 szablony = Jinja2Templates(directory=KATALOG / "szablony")
@@ -93,6 +130,24 @@ def ile_czasu(od: datetime | None) -> str:
     return f"{minuty // (24 * 60)} dni {minuty % (24 * 60) // 60} h"
 
 
+def czas_na_etapie(od: datetime | None) -> str:
+    """Czas oczekiwania na etapie w dniach (S22IT1S0P2-32); poniżej doby – w godzinach i minutach."""
+    if od is None:
+        return "–"
+    dni = (teraz() - od).days
+    if dni < 1:
+        return ile_czasu(od)
+    return "1 dzień" if dni == 1 else f"{dni} dni"
+
+
+def osoba(z: Zolnierz | None) -> str:
+    """Osoba odpowiedzialna: stopień, imię i nazwisko, stanowisko (S22IT1S0P2-32)."""
+    if z is None:
+        return "–"
+    tekst = f"{z.stopien} {z.imie_nazwisko}"
+    return f"{tekst}, {z.funkcja}" if z.funkcja else tekst
+
+
 def data_pl(wartosc: str | None) -> str:
     """Data z wniosku (RRRR-MM-DD lub DD.MM.RRRR) w formacie DD.MM.RRRR."""
     if not wartosc:
@@ -108,7 +163,15 @@ def klasa_statusu(status: str) -> str:
     return "status-" + status.replace(" ", "-").replace("ł", "l").replace("ż", "z").replace("ę", "e")
 
 
-szablony.env.filters.update(czas=czas_lokalny, ile_czasu=ile_czasu, klasa_statusu=klasa_statusu, data_pl=data_pl)
+szablony.env.filters.update(
+    czas=czas_lokalny,
+    ile_czasu=ile_czasu,
+    klasa_statusu=klasa_statusu,
+    data_pl=data_pl,
+    czas_na_etapie=czas_na_etapie,
+    osoba=osoba,
+)
+szablony.env.globals["slownik_statusow"] = SLOWNIK_STATUSOW
 
 
 # ---------------------------------------------------------------- użytkownik
@@ -147,6 +210,7 @@ def liczba_do_zatwierdzenia(s: Session, uzytkownik: Zolnierz) -> int:
 
 
 def strona(request: Request, s: Session, szablon: str, uzytkownik: Zolnierz | None = None, **kontekst):
+    kontekst.setdefault("srodki_transportu", SRODKI_TRANSPORTU)
     if uzytkownik is not None:
         kontekst["do_zatwierdzenia"] = liczba_do_zatwierdzenia(s, uzytkownik)
         kontekst["csrf"] = token_csrf(request.cookies.get(CIASTECZKO, ""), settings.session_secret.get_secret_value())
@@ -379,31 +443,16 @@ def pulpit(request: Request, s: Session = Depends(get_sesja), uzytkownik: Zolnie
         .where(Delegacja.id_zolnierza == uzytkownik.id_zolnierza)
         .order_by(Delegacja.data_zmiany_statusu.desc())
     ).all()
-    return strona(request, s, "pulpit.html", uzytkownik, wnioski=wnioski)
+    id_osob = {d.id_zatwierdzajacego for d in wnioski if d.id_zatwierdzajacego}
+    osoby = {z.id_zolnierza: z for z in s.scalars(select(Zolnierz).where(Zolnierz.id_zolnierza.in_(id_osob)))}
+    return strona(request, s, "pulpit.html", uzytkownik, wnioski=wnioski, osoby=osoby)
 
 
 @router.get("/wnioski/nowy", response_class=HTMLResponse)
 def nowy_wniosek(request: Request, s: Session = Depends(get_sesja), uzytkownik: Zolnierz = Depends(biezacy_uzytkownik)):
     przedsiewziecia = s.scalars(select(Przedsiewziecie).order_by(Przedsiewziecie.data_rozpoczecia)).all()
     jednostka = s.get(Jednostka, uzytkownik.id_jednostki)
-    miasta_ofert = sorted(
-        {
-            p.dokad
-            for p in s.scalars(select(Polaczenie))
-            if jednostka
-            and not p.id_polaczenia.startswith("M-")
-            and nazwa_miejscowosci(p.skad) == nazwa_miejscowosci(jednostka.miejscowosc)
-        }
-    )
-    return strona(
-        request,
-        s,
-        "nowy_wniosek.html",
-        uzytkownik,
-        przedsiewziecia=przedsiewziecia,
-        miasta_ofert=miasta_ofert,
-        srodki_transportu=SRODKI_TRANSPORTU,
-    )
+    return strona(request, s, "nowy_wniosek.html", uzytkownik, przedsiewziecia=przedsiewziecia, jednostka=jednostka)
 
 
 @router.post("/wnioski/nowy")
@@ -417,6 +466,8 @@ async def zloz_nowy_wniosek(
     podstawa_data_rozkazu: str = Form(""),
     srodek_transportu: str = Form("kolej"),
     potrzeba_zakwaterowania: bool = Form(False),
+    nr_rejestracyjny: str = Form(""),
+    pojemnosc_silnika: str = Form(""),
     s: Session = Depends(get_sesja),
     broker: Broker = Depends(get_broker),
     uzytkownik: Zolnierz = Depends(biezacy_uzytkownik),
@@ -437,11 +488,65 @@ async def zloz_nowy_wniosek(
         data_powrotu=data_powrotu or None,
         srodek_transportu=srodek_transportu or None,
         potrzeba_zakwaterowania=potrzeba_zakwaterowania,
+        dane_transportu=dane_pojazdu(srodek_transportu, nr_rejestracyjny, pojemnosc_silnika),
         podstawa_numer_rozkazu=podstawa_numer_rozkazu or None,
         podstawa_data_rozkazu=podstawa_data_rozkazu or None,
     )
     d = await zarejestruj_wniosek(s, broker, wniosek)
     return RedirectResponse(f"/app/wnioski/{d.id_delegacji}", status_code=303)
+
+
+def dane_pojazdu(srodek_transportu: str, nr_rejestracyjny: str, pojemnosc_silnika: str) -> dict[str, str]:
+    """Dane pojazdu prywatnego (S22IT1S0P2-12) – tylko gdy wybrano ten środek transportu."""
+    if srodek_transportu != "samochód prywatny":
+        return {}
+    dane = {"nr_rejestracyjny": nr_rejestracyjny.strip(), "pojemnosc_silnika": pojemnosc_silnika.strip()}
+    return {pole: wartosc for pole, wartosc in dane.items() if wartosc}
+
+
+@router.post("/wnioski/nowy/podsumowanie", response_class=HTMLResponse)
+def podsumowanie_wniosku(
+    request: Request,
+    popraw: bool = False,
+    id_przedsiewziecia: str = Form(""),
+    cel_wyjazdu: str = Form(""),
+    miejsce_docelowe: str = Form(""),
+    data_wyjazdu: str = Form(""),
+    data_powrotu: str = Form(""),
+    podstawa_numer_rozkazu: str = Form(""),
+    podstawa_data_rozkazu: str = Form(""),
+    srodek_transportu: str = Form("kolej"),
+    potrzeba_zakwaterowania: bool = Form(False),
+    nr_rejestracyjny: str = Form(""),
+    pojemnosc_silnika: str = Form(""),
+    s: Session = Depends(get_sesja),
+    uzytkownik: Zolnierz = Depends(biezacy_uzytkownik),
+):
+    """S22IT1S0P2-52: sprawdzenie kompletności i podsumowanie przed złożeniem – wniosek nie jest jeszcze zapisywany."""
+    p = s.get(Przedsiewziecie, id_przedsiewziecia) if id_przedsiewziecia else None
+    w = {
+        "id_przedsiewziecia": p.id_przedsiewziecia if p else "",
+        "cel_wyjazdu": cel_wyjazdu.strip() or (p.nazwa if p else ""),
+        "miejsce_docelowe": miejsce_docelowe.strip() or (p.miejscowosc if p else ""),
+        "data_wyjazdu": data_wyjazdu or (p.data_rozpoczecia.isoformat() if p else ""),
+        "data_powrotu": data_powrotu or (p.data_zakonczenia.isoformat() if p else ""),
+        "podstawa_numer_rozkazu": podstawa_numer_rozkazu.strip(),
+        "podstawa_data_rozkazu": podstawa_data_rozkazu,
+        "srodek_transportu": srodek_transportu,
+        "potrzeba_zakwaterowania": potrzeba_zakwaterowania,
+        "dane_transportu": dane_pojazdu(srodek_transportu, nr_rejestracyjny, pojemnosc_silnika),
+    }
+    jednostka = s.get(Jednostka, uzytkownik.id_jednostki)
+    bledy = [] if popraw else waliduj_wniosek(w, jednostka=uzytkownik.id_jednostki)
+    if popraw or bledy:
+        # scenariusz 3a–4a: wskazanie brakujących lub błędnych danych, formularz z wpisanymi już wartościami
+        przedsiewziecia = s.scalars(select(Przedsiewziecie).order_by(Przedsiewziecie.data_rozpoczecia)).all()
+        bledy_pol = {b.pole: b.komunikat for b in bledy}
+        kontekst = dict(przedsiewziecia=przedsiewziecia, jednostka=jednostka, w=w, bledy=bledy, bledy_pol=bledy_pol)
+        return strona(request, s, "nowy_wniosek.html", uzytkownik, **kontekst)
+    liczba_dni = (parsuj_date(w["data_powrotu"]) - parsuj_date(w["data_wyjazdu"])).days + 1
+    kontekst = dict(w=w, jednostka=jednostka, przedsiewziecie=p, liczba_dni=liczba_dni)
+    return strona(request, s, "podsumowanie_wniosku.html", uzytkownik, **kontekst)
 
 
 def dane_wniosku(s: Session, id_delegacji: str, uzytkownik: Zolnierz) -> dict:
@@ -481,15 +586,17 @@ def dane_wniosku(s: Session, id_delegacji: str, uzytkownik: Zolnierz) -> dict:
             odswiezaj = False
         elif warianty or wynik_transportu:
             porownanie = zestawienie(s, d)
-            if porownanie["brak_kierunkow"] or not any(
-                w["kierunek"] == "Tam" and not w["spozniony"] for w in porownanie["warianty"]
-            ):
+            if not porownanie["mozna_zatwierdzic"] or porownanie["brak_spojnej_preferowanej_pary"]:
                 oczekiwanie = "Brak kompletu odpowiednich przejazdów. Podróż wymaga uzgodnienia."
             else:
                 oczekiwanie = "Warianty są przygotowane. Oczekiwanie na wybór podróży przez osobę akceptującą."
             odswiezaj = False
         else:
             oczekiwanie = "Oczekiwanie na przygotowanie wariantów podróży."
+    etap = ETAP_STATUSU_BOCZNEGO.get(d.status, d.status)
+    przypomnienie = next((o for o in operacje if o.operacja == OPERACJA_PRZYPOMNIENIA), None)
+    przekazanie = next((o for o in operacje if o.operacja == OPERACJA_PRZEKAZANIA), None)
+    ostatnia_aktywnosc = max([d.data_zmiany_statusu, *(o.znacznik_czasu for o in operacje)])
     return dict(
         d=d,
         wnioskodawca=s.get(Zolnierz, d.id_zolnierza),
@@ -501,6 +608,13 @@ def dane_wniosku(s: Session, id_delegacji: str, uzytkownik: Zolnierz) -> dict:
         bledy=bledy,
         w_toku=odswiezaj,
         oczekiwanie=oczekiwanie,
+        etapy=ETAPY_PROCESU,
+        pozycja_etapu=ETAPY_PROCESU.index(etap) if etap in ETAPY_PROCESU else -1,
+        status_boczny=d.status in ETAP_STATUSU_BOCZNEGO,
+        przypomnienie=przypomnienie,
+        przekazanie=przekazanie,
+        ostatnia_aktywnosc=ostatnia_aktywnosc,
+        nieaktualny=d.status in ETAPY_W_TOKU and teraz() - ostatnia_aktywnosc > NIEAKTUALNY_PO,
     )
 
 
@@ -555,7 +669,7 @@ def rozliczenie(
     s: Session = Depends(get_sesja),
     uzytkownik: Zolnierz = Depends(biezacy_uzytkownik),
 ):
-    komunikat = KOMUNIKAT_PRZYJETY if wynik == WYNIK_DOKUMENT_PRZYJETY else None
+    komunikat = {WYNIK_DOKUMENT_PRZYJETY: KOMUNIKAT_PRZYJETY, WYNIK_PODROZ_ZAPISANA: KOMUNIKAT_PODROZ}.get(wynik)
     return strona(
         request,
         s,
@@ -564,6 +678,61 @@ def rozliczenie(
         **dane_rozliczenia(s, id_delegacji, uzytkownik),
         komunikat=komunikat,
     )
+
+
+WYNIK_PODROZ_ZAPISANA = "podroz-zapisana"
+KOMUNIKAT_PODROZ = "Zapisano faktyczny czas podróży i zapewnione świadczenia."
+
+
+def _liczba_posilkow(tekst: str) -> int | None:
+    try:
+        liczba = int(tekst or 0)
+    except ValueError:
+        return None
+    return liczba if liczba >= 0 else None
+
+
+@router.post("/wnioski/{id_delegacji}/rozliczenie/podroz", response_class=HTMLResponse)
+def zapisz_podroz_w_interfejsie(
+    id_delegacji: str,
+    request: Request,
+    faktyczny_wyjazd: str = Form(""),
+    faktyczny_powrot: str = Form(""),
+    sniadania: str = Form("0"),
+    obiady: str = Form("0"),
+    kolacje: str = Form("0"),
+    bezplatne_zakwaterowanie: bool = Form(False),
+    s: Session = Depends(get_sesja),
+    uzytkownik: Zolnierz = Depends(biezacy_uzytkownik),
+):
+    """S22IT1S0P2-60: faktyczny czas podróży i zapewnione świadczenia w rozliczeniu delegacji."""
+    kontekst = dane_rozliczenia(s, id_delegacji, uzytkownik)
+    try:
+        wyjazd, powrot = datetime.fromisoformat(faktyczny_wyjazd), datetime.fromisoformat(faktyczny_powrot)
+    except ValueError:
+        wyjazd = powrot = None
+    posilki = {"śniadanie": sniadania, "obiad": obiady, "kolacja": kolacje}
+    liczby = {posilek: _liczba_posilkow(tekst) for posilek, tekst in posilki.items()}
+    komunikat = None
+    if wyjazd is None or powrot is None:
+        komunikat = "Podaj datę i godzinę wyjazdu oraz powrotu."
+    elif powrot <= wyjazd:
+        komunikat = "Powrót musi nastąpić po wyjeździe."
+    elif None in liczby.values():
+        komunikat = "Liczba posiłków musi być liczbą całkowitą, nie mniejszą niż 0."
+    if komunikat:
+        return strona(request, s, "rozliczenie.html", uzytkownik, **kontekst, komunikat=komunikat, blad=True)
+
+    rozliczenie = kontekst["rozliczenie"]
+    if rozliczenie is None:
+        rozliczenie = Rozliczenie(id_delegacji=id_delegacji)
+        s.add(rozliczenie)
+    rozliczenie.faktyczny_wyjazd = wyjazd
+    rozliczenie.faktyczny_powrot = powrot
+    rozliczenie.zapewnione_posilki = {posilek: liczba for posilek, liczba in liczby.items() if liczba}
+    rozliczenie.bezplatne_zakwaterowanie = bezplatne_zakwaterowanie
+    s.commit()
+    return RedirectResponse(f"/app/wnioski/{id_delegacji}/rozliczenie?wynik={WYNIK_PODROZ_ZAPISANA}", status_code=303)
 
 
 @router.post("/wnioski/{id_delegacji}/rozliczenie/dokumenty", response_class=HTMLResponse)
@@ -606,20 +775,51 @@ def dodaj_dokument_w_interfejsie(
     )
 
 
-# ---------------------------------------------------------------- przełożony
+# ---------------------------------------------------------------- przełożony – zbiorcze zatwierdzanie (S22IT1S0P2-35)
+
+
+def kwota(wartosc) -> str:
+    """Kwota w złotych w zapisie polskim, np. 1 670,00 zł."""
+    if wartosc is None:
+        return "–"
+    return f"{wartosc:,.2f}".replace(",", "\u00a0").replace(".", ",") + "\u00a0zł"
+
+
+szablony.env.filters["kwota"] = kwota
+
+
+def dane_zatwierdzania(s: Session, uzytkownik: Zolnierz) -> dict:
+    """Zestawienie dla przełożonego: wnioski, szacowane koszty, budżet jednostki, wnioski wstrzymane."""
+    wnioski = oczekujace_na_decyzje(s, uzytkownik.id_zolnierza)
+    return dict(
+        wnioski=wnioski,
+        wnioskodawcy={z.id_zolnierza: z for z in s.scalars(select(Zolnierz))},
+        koszty={d.id_delegacji: koszt_delegacji(d) for d in wnioski},
+        budzet=budzet_jednostki(s, uzytkownik),
+        wstrzymane=wstrzymane_z_powodu_budzetu(s, [d.id_delegacji for d in wnioski]),
+    )
 
 
 @router.get("/do-zatwierdzenia", response_class=HTMLResponse)
 def do_zatwierdzenia(
     request: Request, s: Session = Depends(get_sesja), uzytkownik: Zolnierz = Depends(biezacy_uzytkownik)
 ):
-    wnioski = s.scalars(
-        select(Delegacja)
-        .where(Delegacja.status == Status.W_AKCEPTACJI, Delegacja.id_zatwierdzajacego == uzytkownik.id_zolnierza)
-        .order_by(Delegacja.data_zmiany_statusu)
-    ).all()
-    wnioskodawcy = {z.id_zolnierza: z for z in s.scalars(select(Zolnierz))}
-    return strona(request, s, "do_zatwierdzenia.html", uzytkownik, wnioski=wnioski, wnioskodawcy=wnioskodawcy)
+    return strona(request, s, "do_zatwierdzenia.html", uzytkownik, **dane_zatwierdzania(s, uzytkownik))
+
+
+@router.post("/do-zatwierdzenia", response_class=HTMLResponse)
+async def decyduj_zbiorczo(
+    request: Request,
+    wnioski: Annotated[list[str] | None, Form()] = None,
+    decyzja: str = Form(...),
+    uzasadnienie: str = Form(""),
+    s: Session = Depends(get_sesja),
+    broker: Broker = Depends(get_broker),
+    uzytkownik: Zolnierz = Depends(biezacy_uzytkownik),
+):
+    wynik = await decyzja_zbiorcza(s, broker, uzytkownik, wnioski or [], decyzja, uzasadnienie)
+    kontekst = dane_zatwierdzania(s, uzytkownik)
+    return strona(request, s, "do_zatwierdzenia.html", uzytkownik, **kontekst, wynik=wynik)
 
 
 @router.post("/do-zatwierdzenia/{id_delegacji}", response_class=HTMLResponse)
@@ -644,8 +844,12 @@ async def decyduj(
             "_wiersz_decyzji.html",
             {"d": d, "wnioskodawca": wnioskodawca, "blad": "Podaj uzasadnienie odmowy lub zwrotu do uzupełnienia"},
         )
-    dane = {"id_osoby": uzytkownik.id_zolnierza, "decyzja": decyzja, "uzasadnienie": uzasadnienie.strip() or None}
-    await broker.publikuj(Komunikat(typ=Typ.DECYZJA_PRZELOZONEGO, id_delegacji=id_delegacji, dane=dane))
-    return szablony.TemplateResponse(
-        request, "_wiersz_decyzji.html", {"d": d, "wnioskodawca": wnioskodawca, "przekazano": decyzja}
-    )
+    wynik = await decyzja_zbiorcza(s, broker, uzytkownik, [id_delegacji], decyzja, uzasadnienie)
+    kontekst = {"d": d, "wnioskodawca": wnioskodawca, "koszt": koszt_delegacji(d)}
+    if wynik.wstrzymane:
+        kontekst.update(wstrzymany=True, blad=wynik.komunikat)
+    elif wynik.blad:
+        kontekst["blad"] = wynik.komunikat
+    else:
+        kontekst["przekazano"] = decyzja
+    return szablony.TemplateResponse(request, "_wiersz_decyzji.html", kontekst)

@@ -4,6 +4,7 @@ Wartości przyjęte w modelu informacyjnym projektu. Przed użyciem w rozliczeni
 zweryfikuj je z aktualnymi przepisami o należnościach za podróże służbowe żołnierzy.
 """
 
+from datetime import date
 from decimal import Decimal
 
 DIETA_KRAJOWA = Decimal("45.00")  # za dobę podróży
@@ -17,3 +18,19 @@ POTRACENIE_ZA_POSILEK = {
     "obiad": Decimal("0.50"),
     "kolacja": Decimal("0.25"),
 }
+
+
+# Szacunkowy koszt przejazdu tam i z powrotem – do oceny budżetu przed zatwierdzeniem (S22IT1S0P2-35).
+# Wartość przykładowa; dokładny koszt wybiera Agent Transportu (S22IT1S0P2-27).
+SZACUNEK_PRZEJAZDU = Decimal("200.00")
+
+
+def szacuj_koszt(data_wyjazdu: date | None, data_powrotu: date | None, nocleg: bool) -> Decimal | None:
+    """Przewidywany koszt delegacji: dieta i komunikacja miejscowa za każdą dobę, przejazd, noclegi w limicie."""
+    if data_wyjazdu is None or data_powrotu is None or data_powrotu < data_wyjazdu:
+        return None
+    doby = (data_powrotu - data_wyjazdu).days + 1
+    koszt = doby * (DIETA_KRAJOWA + RYCZALT_DOJAZDY) + SZACUNEK_PRZEJAZDU
+    if nocleg:
+        koszt += (doby - 1) * LIMIT_NOCLEGOWY
+    return koszt.quantize(Decimal("0.01"))

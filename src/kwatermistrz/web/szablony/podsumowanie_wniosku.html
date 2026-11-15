@@ -1,0 +1,46 @@
+{% extends "baza.html" %}
+{% block tytul %}Podsumowanie wniosku{% endblock %}
+{% block tresc %}
+<h2>Podsumowanie wniosku</h2>
+{# S22IT1S0P2-52: krok 2 – podsumowanie przed złożeniem (dane już sprawdzone pod względem kompletności) #}
+<p><small>Krok 2 z 2: sprawdź dane i złóż wniosek</small></p>
+
+<p class="komunikat" role="status">Dane są kompletne. Sprawdź je – po złożeniu wniosek trafi do przełożonego.</p>
+
+<article>
+  <header><strong>Wnioskodawca</strong></header>
+  <p>{{ uzytkownik.stopien }} {{ uzytkownik.imie_nazwisko }}
+    {% if uzytkownik.pododdzial %}· {{ uzytkownik.pododdzial }}{% endif %}
+    · {{ jednostka.nazwa if jednostka else uzytkownik.id_jednostki }}</p>
+</article>
+
+<article>
+  <header><strong>Wyjazd</strong></header>
+  <dl class="podsumowanie">
+    <dt>Cel</dt><dd>{{ w.cel_wyjazdu }}</dd>
+    <dt>Miejsce docelowe</dt><dd>{{ w.miejsce_docelowe }}</dd>
+    <dt>Termin</dt><dd>{{ w.data_wyjazdu | data_pl }} – {{ w.data_powrotu | data_pl }}
+      {% if liczba_dni %}<small>({{ liczba_dni }} {{ "dzień" if liczba_dni == 1 else "dni" }})</small>{% endif %}</dd>
+    {% if przedsiewziecie %}<dt>Przedsięwzięcie</dt><dd>{{ przedsiewziecie.nazwa }}</dd>{% endif %}
+    <dt>Podstawa</dt><dd>{{ w.podstawa_numer_rozkazu or "–" }}{% if w.podstawa_data_rozkazu %} z {{ w.podstawa_data_rozkazu | data_pl }}{% endif %}</dd>
+    <dt>Transport</dt><dd>{{ "pojazd prywatny" if w.srodek_transportu == "samochód prywatny" else w.srodek_transportu }}
+      {% if w.dane_transportu %}<small>({{ w.dane_transportu.get("nr_rejestracyjny") }}, {{ w.dane_transportu.get("pojemnosc_silnika") }} cm³)</small>{% endif %}</dd>
+    <dt>Zakwaterowanie</dt><dd>{{ "tak" if w.potrzeba_zakwaterowania else "nie" }}</dd>
+  </dl>
+</article>
+
+<form method="post" action="/app/wnioski/nowy">
+  {% for nazwa in ("id_przedsiewziecia", "cel_wyjazdu", "miejsce_docelowe", "data_wyjazdu", "data_powrotu",
+                   "podstawa_numer_rozkazu", "podstawa_data_rozkazu", "srodek_transportu") %}
+  <input type="hidden" name="{{ nazwa }}" value="{{ w.get(nazwa) or '' }}">
+  {% endfor %}
+  {% for nazwa, wartosc in (w.dane_transportu or {}).items() %}
+  <input type="hidden" name="{{ nazwa }}" value="{{ wartosc }}">
+  {% endfor %}
+  {% if w.potrzeba_zakwaterowania %}<input type="hidden" name="potrzeba_zakwaterowania" value="true">{% endif %}
+  <div class="przyciski-formularza">
+    <button type="submit">Złóż wniosek</button>
+    <button type="submit" class="secondary outline" formaction="/app/wnioski/nowy/podsumowanie?popraw=1">Popraw dane</button>
+  </div>
+</form>
+{% endblock %}

@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from ..audit import Decyzja
 from ..messaging import Komunikat, Typ
 from ..models import Zolnierz
+from ..stawki import szacuj_koszt
 from ..walidacja import parsuj_date, waliduj_wniosek
 from .base import Agent, Kontekst, pobierz_delegacje
 from .polecenie import sporzadz_polecenie
@@ -36,6 +37,8 @@ class AgentWnioskow(Agent):
             d.data_wyjazdu = parsuj_date(w["data_wyjazdu"])
             d.data_powrotu = d.pierwotna_data_powrotu = parsuj_date(w["data_powrotu"])
             d.srodek_transportu = w.get("srodek_transportu")
+            # S22IT1S0P2-35: przewidywany koszt – przełożony porównuje go z budżetem jednostki
+            d.szacowany_koszt = szacuj_koszt(d.data_wyjazdu, d.data_powrotu, d.potrzeba_zakwaterowania)
         else:
             ktx.ostrzezenie("; ".join(b.komunikat for b in bledy))
 

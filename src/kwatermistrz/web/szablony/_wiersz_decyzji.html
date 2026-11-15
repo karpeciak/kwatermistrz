@@ -1,15 +1,23 @@
 {% set w = d.dane_wniosku %}
 <tr id="wniosek-{{ d.id_delegacji }}">
+  <td>
+    {% if not przekazano %}
+    <input type="checkbox" name="wnioski" value="{{ d.id_delegacji }}" form="decyzja-zbiorcza"
+           data-koszt="{{ koszt or 0 }}" aria-label="Zaznacz wniosek {{ d.id_delegacji }}">
+    {% endif %}
+  </td>
   <td class="bez-lamania"><a href="/app/wnioski/{{ d.id_delegacji }}">{{ d.id_delegacji }}</a></td>
   <td>{{ wnioskodawca.stopien }} {{ wnioskodawca.imie_nazwisko }}<br><small>{{ wnioskodawca.pododdzial or "" }}</small></td>
   <td>{{ d.cel_wyjazdu or w.get("cel_wyjazdu") or "–" }}<br><small>{{ d.miejsce_docelowe or w.get("miejsce_docelowe") or "" }}</small></td>
   <td><span class="bez-lamania">{{ w.get("data_wyjazdu") | data_pl }} – {{ w.get("data_powrotu") | data_pl }}</span></td>
+  <td class="kwota">{% if koszt is defined and koszt is not none %}{{ koszt | kwota }}{% else %}<small>brak szacunku</small>{% endif %}</td>
   <td>{{ d.data_zmiany_statusu | ile_czasu }}</td>
   <td class="kolumna-decyzji">
     {% if przekazano %}
     <span class="status {{ ('zatwierdzony' if przekazano == 'Zgoda' else 'odrzucony' if przekazano == 'Odmowa' else 'do uzupełnienia') | klasa_statusu }}">{{ przekazano }}</span>
     <small>decyzja przekazana</small>
     {% else %}
+    {% if wstrzymany %}<small class="wstrzymany">Wstrzymany – czeka na decyzję komórki finansowej (przekroczenie budżetu)</small>{% endif %}
     <form hx-post="/app/do-zatwierdzenia/{{ d.id_delegacji }}" hx-target="#wniosek-{{ d.id_delegacji }}" hx-swap="outerHTML" class="decyzja">
       <input name="uzasadnienie" placeholder="uzasadnienie (przy odmowie)" aria-label="Uzasadnienie">
       {% if blad %}<small class="blad">{{ blad }}</small>{% endif %}
