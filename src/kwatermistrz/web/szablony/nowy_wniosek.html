@@ -100,10 +100,12 @@
     <div class="grid">
       <label>Numer rozkazu *
         <input name="podstawa_numer_rozkazu" required value="{{ w.get('podstawa_numer_rozkazu') or '' }}"
-               placeholder="np. Rozkaz dzienny nr 215/2026">
+               placeholder="np. Rozkaz dzienny nr 215/2026"{{ aria("podstawa_numer_rozkazu") }}>
+               {{ blad("podstawa_numer_rozkazu") }}
       </label>
       <label>Data rozkazu *
-        <input type="date" name="podstawa_data_rozkazu" required value="{{ w.get('podstawa_data_rozkazu') or '' }}">
+        <input type="date" name="podstawa_data_rozkazu" required value="{{ w.get('podstawa_data_rozkazu') or '' }}"{{ aria("podstawa_data_rozkazu") }}>
+        {{ blad("podstawa_data_rozkazu") }}
       </label>
     </div>
   </fieldset>
