@@ -156,7 +156,8 @@ def test_podsumowanie_zlozenie_zatwierdzenie_budzet_i_wybor_po_scaleniu_main():
         assert not stan["w_toku"] and not stan["nieaktualny"]
         html = strona(request, s, "wniosek.html", osoba, **stan).body.decode()
         widoczne = str(WidocznyTekst(html))
-        assert "Transport został wybrany" in widoczne and "Historia obsługi" in widoczne
+        assert stan["d"].status == Status.ZORGANIZOWANY
+        assert "Historia obsługi" in widoczne
         assert "Rekomendacja wariantu podróży" not in widoczne
 
 

@@ -5,10 +5,11 @@ Do zrobienia w sprincie 1:
   kosztowe (delegacja w statusie `Status.DO_ROZLICZENIA`) → `Typ.ZADANIE_ROZLICZENIA`;
   `GET /delegacje/{id}/rozliczenie` – zestawienie składników i kwota należności;
   zatwierdzenie wyliczenia przez delegowanego.
-- S22IT1S0P2-43: `POST /delegacje/{id}/rozliczenie/przekazanie` → `Typ.ZADANIE_WERYFIKACJI`;
-  akceptacja zweryfikowanego wyliczenia albo zastrzeżenia → `Typ.AKCEPTACJA_ROZLICZENIA`.
 
 Zrobione:
+- S22IT1S0P2-43: `POST /delegacje/{id}/rozliczenie/przekazanie` → `Typ.ZADANIE_WERYFIKACJI`;
+  `GET /delegacje/{id}/rozliczenie/weryfikacja` – wynik weryfikacji z korektami;
+  `POST /delegacje/{id}/rozliczenie/akceptacja` – akceptacja albo zastrzeżenia → `Typ.AKCEPTACJA_ROZLICZENIA`.
 - S22IT1S0P2-20: `POST /delegacje/{id}/rozliczenie/dokumenty` przyjmuje dokumenty, odrzuca duplikaty oraz loguje
   odrzucenie.
 """
@@ -27,7 +28,16 @@ from sqlalchemy.orm import Session
 from ..agents.dokumenty_kosztowe import klucz_dokumentu, znajdz_duplikat
 from ..audit import zapisz_operacje
 from ..messaging import Broker, Komunikat, Typ
-from ..models import Delegacja, DokumentKosztowy, Jednostka, Rozliczenie, Status, StatusRozliczenia, Zolnierz
+from ..models import (
+    Delegacja,
+    DokumentKosztowy,
+    Jednostka,
+    KorektaRozliczenia,
+    Rozliczenie,
+    Status,
+    StatusRozliczenia,
+    Zolnierz,
+)
 from .zaleznosci import get_broker, get_sesja, pobierz_delegacje
 from .zatwierdzenia import koszt_delegacji
 
@@ -352,3 +362,74 @@ async def zatwierdz_wyliczenie_api(
     if komunikat:
         raise HTTPException(409, komunikat)
     return {"status": StatusRozliczenia.GOTOWE_DO_WERYFIKACJI}
+
+
+# ---------------------------------------------------------------- S22IT1S0P2-43: weryfikacja i przekazanie
+
+
+class AkceptacjaIn(BaseModel):
+    """Brak zastrzeżeń = akceptacja zweryfikowanego wyliczenia (scenariusz główny); zastrzeżenia – 3a–4a."""
+
+    zastrzezenia: str | None = Field(None, max_length=1000)
+
+
+def rozliczenie_w_statusie(s: Session, id_delegacji: str, status: str, komunikat: str) -> Rozliczenie:
+    d = pobierz_delegacje(s, id_delegacji)
+    rozliczenie = rozliczenie_delegacji(s, d)
+    if rozliczenie is None or rozliczenie.status != status:
+        raise HTTPException(409, komunikat)
+    return rozliczenie
+
+
+@router.post("/delegacje/{id_delegacji}/rozliczenie/przekazanie", status_code=202)
+async def zlec_przekazanie(
+    id_delegacji: str,
+    s: Session = Depends(get_sesja),
+    broker: Broker = Depends(get_broker),
+):
+    """Delegowany zleca przekazanie zatwierdzonego wyliczenia – Agent Zgodności je weryfikuje."""
+    rozliczenie_w_statusie(
+        s, id_delegacji, StatusRozliczenia.GOTOWE_DO_WERYFIKACJI, "Najpierw zatwierdź wyliczenie należności"
+    )
+    await broker.publikuj(Komunikat(typ=Typ.ZADANIE_WERYFIKACJI, id_delegacji=id_delegacji))
+    return {"przyjeto": True}
+
+
+@router.get("/delegacje/{id_delegacji}/rozliczenie/weryfikacja")
+def wynik_weryfikacji(id_delegacji: str, s: Session = Depends(get_sesja)):
+    """Stan weryfikacji i przekazania z korektami wprowadzonymi przez Agenta Zgodności."""
+    d = pobierz_delegacje(s, id_delegacji)
+    rozliczenie = rozliczenie_delegacji(s, d)
+    if rozliczenie is None:
+        raise HTTPException(404, "Ta delegacja nie ma jeszcze rozliczenia")
+    korekty = s.scalars(
+        select(KorektaRozliczenia)
+        .where(KorektaRozliczenia.id_rozliczenia == rozliczenie.id_rozliczenia)
+        .order_by(KorektaRozliczenia.id_korekty)
+    ).all()
+    return {
+        "id_delegacji": d.id_delegacji,
+        "status": rozliczenie.status,
+        "kwota_naleznosci": rozliczenie.kwota_naleznosci,
+        "korekty": [
+            {"pozycja": k.pozycja, "przed": k.wartosc_przed, "po": k.wartosc_po, "powod": k.powod} for k in korekty
+        ],
+        "zastrzezenia": rozliczenie.zastrzezenia,
+        "data_przekazania": rozliczenie.data_przekazania,
+    }
+
+
+@router.post("/delegacje/{id_delegacji}/rozliczenie/akceptacja", status_code=202)
+async def akceptuj_rozliczenie(
+    id_delegacji: str,
+    dane: AkceptacjaIn,
+    s: Session = Depends(get_sesja),
+    broker: Broker = Depends(get_broker),
+):
+    """Delegowany akceptuje zweryfikowane wyliczenie albo zgłasza zastrzeżenia – rozliczenie idzie do finansów."""
+    rozliczenie_w_statusie(s, id_delegacji, StatusRozliczenia.ZWERYFIKOWANE, "Rozliczenie nie jest zweryfikowane")
+    zastrzezenia = (dane.zastrzezenia or "").strip() or None
+    await broker.publikuj(
+        Komunikat(typ=Typ.AKCEPTACJA_ROZLICZENIA, id_delegacji=id_delegacji, dane={"zastrzezenia": zastrzezenia})
+    )
+    return {"przyjeto": True}
