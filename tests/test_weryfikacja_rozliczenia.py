@@ -6,6 +6,7 @@ from decimal import Decimal
 
 import pytest
 from fastapi.testclient import TestClient
+from pomoc_sesji import zaloguj_z_csrf
 from sqlalchemy import select
 
 from kwatermistrz.agents import AGENCI
@@ -247,3 +248,63 @@ def test_api_przekazuje_zastrzezenia(broker, klient):
     assert r.status_code == 202
     assert broker.wyslane[-1].typ == Typ.AKCEPTACJA_ROZLICZENIA
     assert broker.wyslane[-1].dane == {"zastrzezenia": "Brak biletu"}
+
+
+# ---------------------------------------------------------------- przyciski w /app
+
+
+@pytest.fixture
+def przegladarka(broker):
+    app.dependency_overrides[get_broker] = lambda: broker
+    with TestClient(app, follow_redirects=False) as c:
+        zaloguj_z_csrf(c, "ZOL-003")
+        yield c
+    app.dependency_overrides.clear()
+
+
+STRONA = f"/app/wnioski/{ID}/rozliczenie"
+
+
+def test_przyciski_prowadza_od_weryfikacji_do_rozliczenia(broker, przegladarka):
+    zmien(dieta=Decimal("0.00"))
+    assert "Przekaż do weryfikacji" in przegladarka.get(STRONA).text
+
+    r = przegladarka.post(f"{STRONA}/przekazanie")
+    assert r.status_code == 303
+    assert "Agent Zgodności weryfikuje" in przegladarka.get(r.headers["location"]).text  # czeka na agenta
+    dostarcz(broker)
+
+    strona = przegladarka.get(r.headers["location"]).text
+    assert "zweryfikowane" in strona and "Agent Zgodności poprawił wyliczenie (1)" in strona
+    assert "Akceptuję – przekaż do komórki finansowej" in strona
+
+    assert przegladarka.post(f"{STRONA}/akceptacja").status_code == 303
+    dostarcz(broker)
+
+    assert rozliczenie().status == StatusRozliczenia.PRZEKAZANE
+    with sesja() as s:
+        assert s.get(Delegacja, ID).status == Status.ROZLICZONY
+    strona = przegladarka.get(STRONA).text  # rozliczonej delegacji nadal można obejrzeć rozliczenie
+    assert "przekazane do komórki finansowej" in strona and "Akceptuję" not in strona
+    assert "Zobacz rozliczenie" in przegladarka.get(f"/app/wnioski/{ID}").text
+
+
+def test_przycisk_przekazania_z_zastrzezeniami(broker, przegladarka):
+    zmien(status=StatusRozliczenia.ZWERYFIKOWANE)
+    assert "Przekaż z zastrzeżeniami" in przegladarka.get(STRONA).text
+
+    przegladarka.post(f"{STRONA}/akceptacja", data={"zastrzezenia": "  Brak biletu powrotnego  "})
+    dostarcz(broker)
+
+    r = rozliczenie()
+    assert r.status == StatusRozliczenia.PRZEKAZANE_Z_ZASTRZEZENIAMI
+    assert r.zastrzezenia == "Brak biletu powrotnego"
+    assert "Brak biletu powrotnego" in przegladarka.get(STRONA).text
+
+
+def test_przyciski_w_zlej_kolejnosci_pokazuja_komunikat(broker, przegladarka):
+    assert "nie jest jeszcze zweryfikowane" in przegladarka.post(f"{STRONA}/akceptacja").text
+    zmien(status=StatusRozliczenia.W_PRZYGOTOWANIU)
+    assert "Najpierw zatwierdź wyliczenie" in przegladarka.post(f"{STRONA}/przekazanie").text
+    assert "Przekaż do weryfikacji" not in przegladarka.get(STRONA).text
+    assert broker.wyslane == []

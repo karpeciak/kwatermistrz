@@ -8,7 +8,7 @@ Strony do rozbudowy w historyjkach sprintu 1:
 - S22IT1S0P2-32 pełna historia i czas oczekiwania → `wniosek.html`,
 - S22IT1S0P2-35 zbiorcze zatwierdzanie z budżetem → `do_zatwierdzenia.html`,
 - S22IT1S0P2-38, -27, -39 polecenie wyjazdu, wybór przejazdu i noclegu → nowe sekcje w `wniosek.html`,
-- S22IT1S0P2-36, -20, -43 rozliczenie → nowa strona `rozliczenie.html`.
+- S22IT1S0P2-36, -20, -43 rozliczenie → `rozliczenie.html` (-43: przekazanie do weryfikacji i akceptacja).
 """
 
 from datetime import datetime, timedelta
@@ -30,10 +30,13 @@ from ..api.rozliczenia import (
     KOMUNIKAT_PRZYJETY,
     KOMUNIKAT_ZATWIERDZONE,
     DokumentKosztowyIn,
+    korekty_rozliczenia,
     mozna_edytowac,
+    przekaz_rozliczenie,
     przyjmij_dokument,
     zapisz_podroz,
     zatwierdz_wyliczenie,
+    zlec_weryfikacje,
     zlec_wyliczenie,
 )
 from ..api.schemas import WniosekIn
@@ -726,21 +729,24 @@ def stan_wniosku(
 # ---------------------------------------------------------------- rozliczenie
 
 
-def dane_rozliczenia(s: Session, id_delegacji: str, uzytkownik: Zolnierz) -> dict:
+def dane_rozliczenia(s: Session, id_delegacji: str, uzytkownik: Zolnierz, podglad: bool = False) -> dict:
+    """`podglad=True` – sam odczyt: przekazane rozliczenie (delegacja „rozliczona”) też można obejrzeć (-43)."""
     d = s.get(Delegacja, id_delegacji)
     if d is None or d.id_zolnierza != uzytkownik.id_zolnierza:
         raise HTTPException(404, "Nie znaleziono delegacji")
-    if d.status != Status.DO_ROZLICZENIA:
+    dozwolone = (Status.DO_ROZLICZENIA, Status.ROZLICZONY) if podglad else (Status.DO_ROZLICZENIA,)
+    if d.status not in dozwolone:
         raise HTTPException(409, "Delegacja nie kwalifikuje się do rozliczenia")
     rozliczenie = s.scalar(select(Rozliczenie).where(Rozliczenie.id_delegacji == id_delegacji))
-    dokumenty = []
+    dokumenty, korekty = [], []
     if rozliczenie is not None:
         dokumenty = s.scalars(
             select(DokumentKosztowy)
             .where(DokumentKosztowy.id_rozliczenia == rozliczenie.id_rozliczenia)
             .order_by(DokumentKosztowy.id_dokumentu)
         ).all()
-    return {"d": d, "rozliczenie": rozliczenie, "dokumenty": dokumenty}
+        korekty = korekty_rozliczenia(s, rozliczenie)
+    return {"d": d, "rozliczenie": rozliczenie, "dokumenty": dokumenty, "korekty": korekty}
 
 
 @router.get("/wnioski/{id_delegacji}/rozliczenie", response_class=HTMLResponse)
@@ -755,14 +761,17 @@ def rozliczenie(
         WYNIK_DOKUMENT_PRZYJETY: KOMUNIKAT_PRZYJETY,
         WYNIK_PODROZ_ZAPISANA: KOMUNIKAT_PODROZ,
         WYNIK_ZATWIERDZONO: KOMUNIKAT_ZATWIERDZONO,
+        WYNIK_WERYFIKACJA_ZLECONA: KOMUNIKAT_WERYFIKACJA_ZLECONA,
+        WYNIK_PRZEKAZANIE_ZLECONE: KOMUNIKAT_PRZEKAZANIE_ZLECONE,
     }.get(wynik)
     return strona(
         request,
         s,
         "rozliczenie.html",
         uzytkownik,
-        **dane_rozliczenia(s, id_delegacji, uzytkownik),
+        **dane_rozliczenia(s, id_delegacji, uzytkownik, podglad=True),
         komunikat=komunikat,
+        wynik=wynik,
     )
 
 
@@ -818,7 +827,7 @@ async def zapisz_podroz_w_interfejsie(
 
 
 WYNIK_ZATWIERDZONO = "wyliczenie-zatwierdzone"
-KOMUNIKAT_ZATWIERDZONO = "Wyliczenie zatwierdzone – rozliczenie przekazano do weryfikacji."
+KOMUNIKAT_ZATWIERDZONO = "Wyliczenie zatwierdzone – przekaż rozliczenie do weryfikacji."
 
 
 @router.post("/wnioski/{id_delegacji}/rozliczenie/zatwierdzenie", response_class=HTMLResponse)
@@ -877,6 +886,51 @@ async def dodaj_dokument_w_interfejsie(
         **dane_rozliczenia(s, id_delegacji, uzytkownik),
         komunikat=wynik.komunikat,
         blad=not wynik.przyjeto,
+    )
+
+
+# ---------------------------------------------------------------- weryfikacja i przekazanie (S22IT1S0P2-43)
+
+WYNIK_WERYFIKACJA_ZLECONA = "weryfikacja-zlecona"
+KOMUNIKAT_WERYFIKACJA_ZLECONA = "Przekazano do weryfikacji – Agent Zgodności sprawdza wyliczenie."
+WYNIK_PRZEKAZANIE_ZLECONE = "przekazanie-zlecone"
+KOMUNIKAT_PRZEKAZANIE_ZLECONE = "Przekazujemy rozliczenie do komórki finansowej…"
+
+
+@router.post("/wnioski/{id_delegacji}/rozliczenie/przekazanie", response_class=HTMLResponse)
+async def zlec_weryfikacje_w_interfejsie(
+    id_delegacji: str,
+    request: Request,
+    s: Session = Depends(get_sesja),
+    broker: Broker = Depends(get_broker),
+    uzytkownik: Zolnierz = Depends(biezacy_uzytkownik),
+):
+    """S22IT1S0P2-43: zatwierdzone wyliczenie trafia do weryfikacji przez Agenta Zgodności."""
+    kontekst = dane_rozliczenia(s, id_delegacji, uzytkownik)
+    komunikat = await zlec_weryfikacje(s, broker, kontekst["d"])
+    if komunikat:
+        return strona(request, s, "rozliczenie.html", uzytkownik, **kontekst, komunikat=komunikat, blad=True)
+    return RedirectResponse(
+        f"/app/wnioski/{id_delegacji}/rozliczenie?wynik={WYNIK_WERYFIKACJA_ZLECONA}", status_code=303
+    )
+
+
+@router.post("/wnioski/{id_delegacji}/rozliczenie/akceptacja", response_class=HTMLResponse)
+async def przekaz_rozliczenie_w_interfejsie(
+    id_delegacji: str,
+    request: Request,
+    zastrzezenia: str = Form(""),
+    s: Session = Depends(get_sesja),
+    broker: Broker = Depends(get_broker),
+    uzytkownik: Zolnierz = Depends(biezacy_uzytkownik),
+):
+    """S22IT1S0P2-43: akceptacja zweryfikowanego wyliczenia albo zastrzeżenia (3a–4a) → komórka finansowa."""
+    kontekst = dane_rozliczenia(s, id_delegacji, uzytkownik)
+    komunikat = await przekaz_rozliczenie(s, broker, kontekst["d"], zastrzezenia[:1000])
+    if komunikat:
+        return strona(request, s, "rozliczenie.html", uzytkownik, **kontekst, komunikat=komunikat, blad=True)
+    return RedirectResponse(
+        f"/app/wnioski/{id_delegacji}/rozliczenie?wynik={WYNIK_PRZEKAZANIE_ZLECONE}", status_code=303
     )
 
 

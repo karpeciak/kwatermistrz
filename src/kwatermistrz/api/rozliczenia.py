@@ -373,12 +373,37 @@ class AkceptacjaIn(BaseModel):
     zastrzezenia: str | None = Field(None, max_length=1000)
 
 
-def rozliczenie_w_statusie(s: Session, id_delegacji: str, status: str, komunikat: str) -> Rozliczenie:
-    d = pobierz_delegacje(s, id_delegacji)
+KOMUNIKAT_NIE_ZATWIERDZONO = "Najpierw zatwierdź wyliczenie należności."
+KOMUNIKAT_NIE_ZWERYFIKOWANO = "Rozliczenie nie jest jeszcze zweryfikowane."
+
+
+def korekty_rozliczenia(s: Session, rozliczenie: Rozliczenie) -> list[KorektaRozliczenia]:
+    return list(
+        s.scalars(
+            select(KorektaRozliczenia)
+            .where(KorektaRozliczenia.id_rozliczenia == rozliczenie.id_rozliczenia)
+            .order_by(KorektaRozliczenia.id_korekty)
+        ).all()
+    )
+
+
+async def zlec_weryfikacje(s: Session, broker: Broker, d: Delegacja) -> str | None:
+    """Zatwierdzone wyliczenie idzie do Agenta Zgodności; zwraca opis błędu albo None (wspólne dla API i `/app`)."""
     rozliczenie = rozliczenie_delegacji(s, d)
-    if rozliczenie is None or rozliczenie.status != status:
-        raise HTTPException(409, komunikat)
-    return rozliczenie
+    if rozliczenie is None or rozliczenie.status != StatusRozliczenia.GOTOWE_DO_WERYFIKACJI:
+        return KOMUNIKAT_NIE_ZATWIERDZONO
+    await broker.publikuj(Komunikat(typ=Typ.ZADANIE_WERYFIKACJI, id_delegacji=d.id_delegacji))
+    return None
+
+
+async def przekaz_rozliczenie(s: Session, broker: Broker, d: Delegacja, zastrzezenia: str | None) -> str | None:
+    """Akceptacja albo zastrzeżenia delegowanego → przekazanie do finansów; zwraca opis błędu albo None."""
+    rozliczenie = rozliczenie_delegacji(s, d)
+    if rozliczenie is None or rozliczenie.status != StatusRozliczenia.ZWERYFIKOWANE:
+        return KOMUNIKAT_NIE_ZWERYFIKOWANO
+    dane = {"zastrzezenia": (zastrzezenia or "").strip() or None}
+    await broker.publikuj(Komunikat(typ=Typ.AKCEPTACJA_ROZLICZENIA, id_delegacji=d.id_delegacji, dane=dane))
+    return None
 
 
 @router.post("/delegacje/{id_delegacji}/rozliczenie/przekazanie", status_code=202)
@@ -388,10 +413,9 @@ async def zlec_przekazanie(
     broker: Broker = Depends(get_broker),
 ):
     """Delegowany zleca przekazanie zatwierdzonego wyliczenia – Agent Zgodności je weryfikuje."""
-    rozliczenie_w_statusie(
-        s, id_delegacji, StatusRozliczenia.GOTOWE_DO_WERYFIKACJI, "Najpierw zatwierdź wyliczenie należności"
-    )
-    await broker.publikuj(Komunikat(typ=Typ.ZADANIE_WERYFIKACJI, id_delegacji=id_delegacji))
+    komunikat = await zlec_weryfikacje(s, broker, pobierz_delegacje(s, id_delegacji))
+    if komunikat:
+        raise HTTPException(409, komunikat)
     return {"przyjeto": True}
 
 
@@ -402,17 +426,13 @@ def wynik_weryfikacji(id_delegacji: str, s: Session = Depends(get_sesja)):
     rozliczenie = rozliczenie_delegacji(s, d)
     if rozliczenie is None:
         raise HTTPException(404, "Ta delegacja nie ma jeszcze rozliczenia")
-    korekty = s.scalars(
-        select(KorektaRozliczenia)
-        .where(KorektaRozliczenia.id_rozliczenia == rozliczenie.id_rozliczenia)
-        .order_by(KorektaRozliczenia.id_korekty)
-    ).all()
     return {
         "id_delegacji": d.id_delegacji,
         "status": rozliczenie.status,
         "kwota_naleznosci": rozliczenie.kwota_naleznosci,
         "korekty": [
-            {"pozycja": k.pozycja, "przed": k.wartosc_przed, "po": k.wartosc_po, "powod": k.powod} for k in korekty
+            {"pozycja": k.pozycja, "przed": k.wartosc_przed, "po": k.wartosc_po, "powod": k.powod}
+            for k in korekty_rozliczenia(s, rozliczenie)
         ],
         "zastrzezenia": rozliczenie.zastrzezenia,
         "data_przekazania": rozliczenie.data_przekazania,
@@ -427,9 +447,7 @@ async def akceptuj_rozliczenie(
     broker: Broker = Depends(get_broker),
 ):
     """Delegowany akceptuje zweryfikowane wyliczenie albo zgłasza zastrzeżenia – rozliczenie idzie do finansów."""
-    rozliczenie_w_statusie(s, id_delegacji, StatusRozliczenia.ZWERYFIKOWANE, "Rozliczenie nie jest zweryfikowane")
-    zastrzezenia = (dane.zastrzezenia or "").strip() or None
-    await broker.publikuj(
-        Komunikat(typ=Typ.AKCEPTACJA_ROZLICZENIA, id_delegacji=id_delegacji, dane={"zastrzezenia": zastrzezenia})
-    )
+    komunikat = await przekaz_rozliczenie(s, broker, pobierz_delegacje(s, id_delegacji), dane.zastrzezenia)
+    if komunikat:
+        raise HTTPException(409, komunikat)
     return {"przyjeto": True}

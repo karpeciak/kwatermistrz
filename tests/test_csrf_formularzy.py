@@ -43,6 +43,8 @@ def token_z_html(tekst):
         "/app/wnioski/DEL-CSRF/rozliczenie/podroz",
         "/app/wnioski/DEL-CSRF/rozliczenie/dokumenty",
         "/app/wnioski/DEL-CSRF/rozliczenie/zatwierdzenie",
+        "/app/wnioski/DEL-CSRF/rozliczenie/przekazanie",
+        "/app/wnioski/DEL-CSRF/rozliczenie/akceptacja",
         "/app/wnioski/DEL-CSRF/zakwaterowanie",
     ],
 )
