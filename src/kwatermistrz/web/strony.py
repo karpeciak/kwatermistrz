@@ -34,7 +34,13 @@ from ..api.rozliczenia import (
     zlec_wyliczenie,
 )
 from ..api.schemas import WniosekIn
-from ..api.wnioski import zarejestruj_wniosek
+from ..api.wnioski import (
+    etap_przygotowania,
+    usun_wersje_robocza,
+    wersja_robocza,
+    zapisz_wersje_robocza,
+    zarejestruj_wniosek,
+)
 from ..api.zaleznosci import get_broker, get_sesja
 from ..api.zatwierdzenia import (
     budzet_jednostki,
@@ -228,19 +234,23 @@ def wyloguj():
 def pulpit(request: Request, s: Session = Depends(get_sesja), uzytkownik: Zolnierz = Depends(biezacy_uzytkownik)):
     wnioski = s.scalars(
         select(Delegacja)
-        .where(Delegacja.id_zolnierza == uzytkownik.id_zolnierza)
+        .where(Delegacja.id_zolnierza == uzytkownik.id_zolnierza, Delegacja.status != Status.ROBOCZY)
         .order_by(Delegacja.data_zmiany_statusu.desc())
     ).all()
     id_osob = {d.id_zatwierdzajacego for d in wnioski if d.id_zatwierdzajacego}
     osoby = {z.id_zolnierza: z for z in s.scalars(select(Zolnierz).where(Zolnierz.id_zolnierza.in_(id_osob)))}
-    return strona(request, s, "pulpit.html", uzytkownik, wnioski=wnioski, osoby=osoby)
+    robocza = wersja_robocza(s, uzytkownik.id_zolnierza)
+    return strona(request, s, "pulpit.html", uzytkownik, wnioski=wnioski, osoby=osoby, robocza=robocza)
 
 
 @router.get("/wnioski/nowy", response_class=HTMLResponse)
 def nowy_wniosek(request: Request, s: Session = Depends(get_sesja), uzytkownik: Zolnierz = Depends(biezacy_uzytkownik)):
     przedsiewziecia = s.scalars(select(Przedsiewziecie).order_by(Przedsiewziecie.data_rozpoczecia)).all()
     jednostka = s.get(Jednostka, uzytkownik.id_jednostki)
-    return strona(request, s, "nowy_wniosek.html", uzytkownik, przedsiewziecia=przedsiewziecia, jednostka=jednostka)
+    robocza = wersja_robocza(s, uzytkownik.id_zolnierza)  # S22IT1S0P2-80: wznowienie
+    kontekst = dict(przedsiewziecia=przedsiewziecia, jednostka=jednostka, robocza=robocza)
+    w = robocza.dane_wniosku if robocza else None
+    return strona(request, s, "nowy_wniosek.html", uzytkownik, **kontekst, w=w)
 
 
 @router.post("/wnioski/nowy")
@@ -326,6 +336,8 @@ def podsumowanie_wniosku(
     }
     jednostka = s.get(Jednostka, uzytkownik.id_jednostki)
     bledy = [] if popraw else waliduj_wniosek(w, jednostka=uzytkownik.id_jednostki)
+    etap = etap_przygotowania(w) if popraw or bledy else "podsumowanie"
+    zapisz_wersje_robocza(s, uzytkownik.id_zolnierza, w, etap)  # S22IT1S0P2-37
     if popraw or bledy:
         # scenariusz 3a–4a: wskazanie brakujących lub błędnych danych, formularz z wpisanymi już wartościami
         przedsiewziecia = s.scalars(select(Przedsiewziecie).order_by(Przedsiewziecie.data_rozpoczecia)).all()
@@ -335,6 +347,64 @@ def podsumowanie_wniosku(
     liczba_dni = (parsuj_date(w["data_powrotu"]) - parsuj_date(w["data_wyjazdu"])).days + 1
     kontekst = dict(w=w, jednostka=jednostka, przedsiewziecie=p, liczba_dni=liczba_dni)
     return strona(request, s, "podsumowanie_wniosku.html", uzytkownik, **kontekst)
+
+
+# ---------------------------------------------------------------- wersja robocza wniosku (S22IT1S0P2-37)
+
+POLA_WNIOSKU = (
+    "id_przedsiewziecia",
+    "cel_wyjazdu",
+    "miejsce_docelowe",
+    "data_wyjazdu",
+    "data_powrotu",
+    "podstawa_numer_rozkazu",
+    "podstawa_data_rozkazu",
+    "srodek_transportu",
+)
+
+
+def dane_z_formularza(formularz) -> dict:
+    """Dane wniosku z formularza w postaci zapisywanej w wersji roboczej."""
+    w = {pole: str(formularz.get(pole) or "").strip() for pole in POLA_WNIOSKU}
+    w["potrzeba_zakwaterowania"] = formularz.get("potrzeba_zakwaterowania") == "true"
+    w["dane_transportu"] = dane_pojazdu(
+        w["srodek_transportu"],
+        str(formularz.get("nr_rejestracyjny") or ""),
+        str(formularz.get("pojemnosc_silnika") or ""),
+    )
+    return w
+
+
+@router.post("/wnioski/nowy/roboczy", response_class=HTMLResponse)
+async def zapisz_wersje_robocza_w_interfejsie(
+    request: Request,
+    wyjdz: bool = False,
+    s: Session = Depends(get_sesja),
+    uzytkownik: Zolnierz = Depends(biezacy_uzytkownik),
+):
+    """S22IT1S0P2-79: autozapis podczas wypełniania (HTMX) albo „Zapisz i dokończ później”."""
+    w = dane_z_formularza(await request.form())
+    d = zapisz_wersje_robocza(s, uzytkownik.id_zolnierza, w, etap_przygotowania(w))
+    if wyjdz:
+        return RedirectResponse("/app/pulpit?wynik=wersja-robocza", status_code=303)
+    return HTMLResponse(f"<small>Zapisano wersję roboczą · {czas_lokalny(d.data_ostatniej_zmiany)}</small>")
+
+
+@router.post("/wnioski/nowy/roboczy/rezygnacja", response_class=HTMLResponse)
+def rezygnacja_z_wersji_roboczej(
+    request: Request,
+    s: Session = Depends(get_sesja),
+    uzytkownik: Zolnierz = Depends(biezacy_uzytkownik),
+):
+    """S22IT1S0P2-81, scenariusz 5a–6a: usunięcie zachowanych danych i nowy, pusty wniosek."""
+    usun_wersje_robocza(s, uzytkownik.id_zolnierza)
+    s.commit()
+    kontekst = dict(
+        przedsiewziecia=s.scalars(select(Przedsiewziecie).order_by(Przedsiewziecie.data_rozpoczecia)).all(),
+        jednostka=s.get(Jednostka, uzytkownik.id_jednostki),
+        komunikat="Usunięto wersję roboczą – możesz zacząć nowy wniosek.",
+    )
+    return strona(request, s, "nowy_wniosek.html", uzytkownik, **kontekst)
 
 
 def dane_wniosku(s: Session, id_delegacji: str, uzytkownik: Zolnierz) -> dict:

@@ -8,6 +8,20 @@
 {# S22IT1S0P2-52: formularz wniosku – krok 1 z 2 (dane), krok 2 to podsumowanie przed złożeniem #}
 <p><small>Krok 1 z 2: dane wniosku · Krok 2: podsumowanie i złożenie</small></p>
 
+{% if komunikat %}<p class="komunikat" role="status">{{ komunikat }}</p>{% endif %}
+
+{# S22IT1S0P2-37: wznowienie niezłożonego wniosku od miejsca przerwania pracy #}
+{% if robocza %}
+<div class="komunikat" role="status">
+  <p><strong>Masz niezłożony wniosek</strong> z {{ robocza.data_ostatniej_zmiany | czas }}
+    (etap: {{ robocza.etap_przygotowania }}). Zapisane dane są wpisane poniżej – dokończ od miejsca przerwania.</p>
+  <form method="post" action="/app/wnioski/nowy/roboczy/rezygnacja" class="przyciski-formularza"
+        onsubmit="return confirm('Usunąć zapisaną wersję roboczą i zacząć od nowa?')">
+    <button type="submit" class="secondary outline">Zrezygnuj i zacznij od nowa</button>
+  </form>
+</div>
+{% endif %}
+
 {% if bledy %}
 <div class="bledy" role="alert">
   <strong>Wniosku nie można jeszcze złożyć – popraw zaznaczone pola:</strong>
@@ -18,7 +32,9 @@
 {% macro blad(pole) %}{% if bledy_pol.get(pole) %}<small class="blad" id="blad-{{ pole }}">{{ bledy_pol[pole] }}</small>{% endif %}{% endmacro %}
 {% macro aria(pole) %}{% if bledy_pol.get(pole) %} aria-invalid="true" aria-describedby="blad-{{ pole }}"{% endif %}{% endmacro %}
 
-<form method="post" action="/app/wnioski/nowy/podsumowanie" id="formularz-wniosku">
+<form method="post" action="/app/wnioski/nowy/podsumowanie" id="formularz-wniosku"
+      hx-post="/app/wnioski/nowy/roboczy" hx-trigger="change delay:1s, input delay:3s"
+      hx-target="#autozapis" hx-swap="innerHTML">
   <fieldset>
     <legend><strong>Wnioskodawca</strong> <small>(dane z ewidencji)</small></legend>
     <p>{{ uzytkownik.stopien }} {{ uzytkownik.imie_nazwisko }}
@@ -115,8 +131,13 @@
     </div>
   </fieldset>
 
-  <p><small>* pole wymagane</small></p>
-  <button type="submit">Dalej – podsumowanie</button>
+  <p><small>* pole wymagane · wersja robocza zapisuje się automatycznie</small></p>
+  <div class="przyciski-formularza">
+    <button type="submit">Dalej – podsumowanie</button>
+    <button type="submit" class="secondary outline" formaction="/app/wnioski/nowy/roboczy?wyjdz=1" formnovalidate>
+      Zapisz i dokończ później</button>
+    <span id="autozapis" aria-live="polite"></span>
+  </div>
 </form>
 
 <script>

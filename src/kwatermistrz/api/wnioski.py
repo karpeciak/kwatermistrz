@@ -11,8 +11,10 @@ Do zrobienia w sprincie 1:
 """
 
 import uuid
+from typing import Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -37,6 +39,7 @@ async def zarejestruj_wniosek(s: Session, broker: Broker, wniosek: WniosekIn, kl
     if wniosek.id_przedsiewziecia and s.get(Przedsiewziecie, wniosek.id_przedsiewziecia) is None:
         raise HTTPException(404, f"Nie znaleziono przedsięwzięcia {wniosek.id_przedsiewziecia}")
 
+    usun_wersje_robocza(s, wniosek.id_zolnierza)  # S22IT1S0P2-37: wersja niezłożona znika
     d = Delegacja(
         id_delegacji=f"DEL-{teraz():%Y}-{uuid.uuid4().hex[:6].upper()}",
         id_zolnierza=wniosek.id_zolnierza,
@@ -84,3 +87,104 @@ def przebieg_delegacji(id_delegacji: str, s: Session = Depends(get_sesja)):
         )
         for o in operacje
     ]
+
+
+# ---------------------------------------------------------------- S22IT1S0P2-37: wersja robocza wniosku
+
+ETAPY_PRZYGOTOWANIA = ("dane wnioskodawcy", "cel i termin", "preferencje", "podsumowanie")
+
+
+def etap_przygotowania(dane: dict) -> str:
+    """Etap, na którym wnioskodawca przerwał pracę – z tego, które dane już podał."""
+    cel_i_termin = [dane.get(pole) for pole in ("cel_wyjazdu", "miejsce_docelowe", "data_wyjazdu", "data_powrotu")]
+    if all(cel_i_termin):
+        return "preferencje"
+    if any(cel_i_termin) or dane.get("id_przedsiewziecia"):
+        return "cel i termin"
+    return "dane wnioskodawcy"
+
+
+def wersja_robocza(s: Session, id_zolnierza: str) -> Delegacja | None:
+    """Niezłożony wniosek – dostępny wyłącznie dla wnioskodawcy."""
+    return s.scalar(
+        select(Delegacja)
+        .where(Delegacja.id_zolnierza == id_zolnierza, Delegacja.status == Status.ROBOCZY)
+        .order_by(Delegacja.data_ostatniej_zmiany.desc())
+        .limit(1)
+    )
+
+
+def zapisz_wersje_robocza(s: Session, id_zolnierza: str, dane: dict, etap: str) -> Delegacja:
+    """Zachowuje podane dane jako wniosek niezłożony (jedna wersja robocza na wnioskodawcę)."""
+    d = wersja_robocza(s, id_zolnierza)
+    if d is None:
+        d = Delegacja(
+            id_delegacji=f"ROB-{uuid.uuid4().hex[:8].upper()}",
+            id_zolnierza=id_zolnierza,
+            status=Status.ROBOCZY,
+            data_zlozenia=None,
+        )
+        s.add(d)
+    id_przedsiewziecia = dane.get("id_przedsiewziecia") or None
+    if id_przedsiewziecia and s.get(Przedsiewziecie, id_przedsiewziecia) is None:
+        id_przedsiewziecia = None
+    d.id_przedsiewziecia = id_przedsiewziecia
+    d.dane_wniosku = dict(dane)
+    d.potrzeba_zakwaterowania = bool(dane.get("potrzeba_zakwaterowania", True))
+    d.etap_przygotowania = etap
+    d.data_ostatniej_zmiany = teraz()
+    s.commit()
+    return d
+
+
+def usun_wersje_robocza(s: Session, id_zolnierza: str) -> bool:
+    """Usuwa niezłożony wniosek – po złożeniu wniosku albo po rezygnacji wnioskodawcy."""
+    robocze = s.scalars(
+        select(Delegacja).where(Delegacja.id_zolnierza == id_zolnierza, Delegacja.status == Status.ROBOCZY)
+    ).all()
+    for d in robocze:
+        s.delete(d)
+    s.flush()
+    return bool(robocze)
+
+
+class WersjaRoboczaIn(BaseModel):
+    dane: dict = Field(default_factory=dict, examples=[{"cel_wyjazdu": "szkolenie", "miejsce_docelowe": "Toruń"}])
+    etap_przygotowania: Literal["dane wnioskodawcy", "cel i termin", "preferencje", "podsumowanie"] | None = None
+
+
+def wersja_robocza_out(d: Delegacja) -> dict:
+    return {
+        "id_delegacji": d.id_delegacji,
+        "id_zolnierza": d.id_zolnierza,
+        "data_ostatniej_zmiany": d.data_ostatniej_zmiany,
+        "etap_przygotowania": d.etap_przygotowania,
+        "dane": d.dane_wniosku,
+    }
+
+
+@router.get("/wnioskodawcy/{id_zolnierza}/wersja-robocza")
+def pokaz_wersje_robocza(id_zolnierza: str, s: Session = Depends(get_sesja)):
+    """Niezłożony wniosek z zachowanymi danymi – do wznowienia przygotowania (S22IT1S0P2-37)."""
+    d = wersja_robocza(s, id_zolnierza)
+    if d is None:
+        raise HTTPException(404, "Brak niezłożonego wniosku")
+    return wersja_robocza_out(d)
+
+
+@router.put("/wnioskodawcy/{id_zolnierza}/wersja-robocza")
+def zapisz_wersje_robocza_api(id_zolnierza: str, dane: WersjaRoboczaIn, s: Session = Depends(get_sesja)):
+    """Zapis (autozapis) danych rozpoczętego wniosku jako wersji roboczej."""
+    if s.get(Zolnierz, id_zolnierza) is None:
+        raise HTTPException(404, f"Nie znaleziono żołnierza {id_zolnierza}")
+    etap = dane.etap_przygotowania or etap_przygotowania(dane.dane)
+    return wersja_robocza_out(zapisz_wersje_robocza(s, id_zolnierza, dane.dane, etap))
+
+
+@router.delete("/wnioskodawcy/{id_zolnierza}/wersja-robocza")
+def usun_wersje_robocza_api(id_zolnierza: str, s: Session = Depends(get_sesja)):
+    """Rezygnacja z niezłożonego wniosku – usuwa zachowane dane."""
+    if not usun_wersje_robocza(s, id_zolnierza):
+        raise HTTPException(404, "Brak niezłożonego wniosku")
+    s.commit()
+    return {"usunieto": True}

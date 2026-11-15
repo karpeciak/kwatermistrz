@@ -32,7 +32,8 @@ def klient(broker):
 
 def liczba_delegacji() -> int:
     with sesja() as s:
-        return s.scalar(select(func.count()).select_from(Delegacja))
+        # wersja robocza (S22IT1S0P2-37) nie jest złożonym wnioskiem
+        return s.scalar(select(func.count()).select_from(Delegacja).where(Delegacja.status != "roboczy"))
 
 
 def test_formularz_pokazuje_dane_wnioskodawcy_z_ewidencji(klient):
