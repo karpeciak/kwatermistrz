@@ -17,6 +17,7 @@
     (etap: {{ robocza.etap_przygotowania }}). Zapisane dane są wpisane poniżej – dokończ od miejsca przerwania.</p>
   <form method="post" action="/app/wnioski/nowy/roboczy/rezygnacja" class="przyciski-formularza"
         onsubmit="return confirm('Usunąć zapisaną wersję roboczą i zacząć od nowa?')">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
     <button type="submit" class="secondary outline">Zrezygnuj i zacznij od nowa</button>
   </form>
 </div>
@@ -35,6 +36,7 @@
 <form method="post" action="/app/wnioski/nowy/podsumowanie" id="formularz-wniosku"
       hx-post="/app/wnioski/nowy/roboczy" hx-trigger="change delay:1s, input delay:3s"
       hx-target="#autozapis" hx-swap="innerHTML">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
   <fieldset>
     <legend><strong>Wnioskodawca</strong> <small>(dane z ewidencji)</small></legend>
     <p>{{ uzytkownik.stopien }} {{ uzytkownik.imie_nazwisko }}

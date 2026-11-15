@@ -4,6 +4,7 @@ import asyncio
 
 import pytest
 from fastapi.testclient import TestClient
+from pomoc_sesji import zaloguj_z_csrf
 
 from kwatermistrz.api.main import app, get_broker
 from kwatermistrz.api.schemas import WniosekIn
@@ -87,12 +88,12 @@ def klient_lokalny():
 
 def test_wlasny_wniosek_jest_dostepny_na_liscie_podrozy_po_zatwierdzeniu(klient_lokalny):
     klient = klient_lokalny
-    assert klient.post("/app/logowanie", data={"id_zolnierza": "ZOL-003"}).status_code == 303
+    assert zaloguj_z_csrf(klient, "ZOL-003").status_code == 303
     r = klient.post("/app/wnioski/nowy", data={"id_przedsiewziecia": "PRZ-02"})
     assert r.status_code == 303
     url_wniosku = r.headers["location"]
     identyfikator = url_wniosku.rsplit("/", 1)[-1]
-    klient.post("/app/logowanie", data={"id_zolnierza": "ZOL-001"})
+    zaloguj_z_csrf(klient, "ZOL-001")
     assert identyfikator in klient.get("/app/do-zatwierdzenia").text
     assert identyfikator not in klient.get("/app/podroze").text
     klient.post(f"/app/do-zatwierdzenia/{identyfikator}", data={"decyzja": "Zgoda"})
@@ -100,6 +101,6 @@ def test_wlasny_wniosek_jest_dostepny_na_liscie_podrozy_po_zatwierdzeniu(klient_
     stan = klient.get(url_wniosku + "/stan")
     assert stan.status_code == 200 and "Oczekiwanie na wybór" in stan.text
     assert "agenci pracują" not in stan.text and 'hx-trigger="every 3s"' not in stan.text
-    klient.post("/app/logowanie", data={"id_zolnierza": "ZOL-004"})
+    zaloguj_z_csrf(klient, "ZOL-004")
     assert identyfikator not in klient.get("/app/podroze").text
     assert klient.get(url_wniosku + "/podroz").status_code == 404

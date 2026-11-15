@@ -44,7 +44,7 @@ from ..api.wnioski import (
     zapisz_wersje_robocza,
     zarejestruj_wniosek,
 )
-from ..api.zaleznosci import dostep_do_podrozy, get_broker, get_sesja, sprawdz_csrf
+from ..api.zaleznosci import chron_formularze, dostep_do_podrozy, get_broker, get_sesja, sprawdz_csrf
 from ..api.zatwierdzenia import (
     budzet_jednostki,
     decyzja_zbiorcza,
@@ -122,7 +122,7 @@ SLOWNIK_STATUSOW = {
 WYNIK_DOKUMENT_PRZYJETY = "dokument-przyjety"
 
 szablony = Jinja2Templates(directory=KATALOG / "szablony")
-router = APIRouter(prefix="/app", include_in_schema=False)
+router = APIRouter(prefix="/app", include_in_schema=False, dependencies=[Depends(chron_formularze)])
 
 
 # ---------------------------------------------------------------- filtry szablonów
@@ -196,6 +196,8 @@ def biezacy_uzytkownik(request: Request, s: Session = Depends(get_sesja)) -> Zol
     id_zolnierza = odczytaj_sesje(request.cookies.get(CIASTECZKO), settings.session_secret.get_secret_value())
     uzytkownik = s.get(Zolnierz, id_zolnierza) if id_zolnierza else None
     if uzytkownik is None:
+        if request.headers.get("HX-Request", "").lower() == "true":
+            raise HTTPException(401, "Sesja wygasła. Zaloguj się ponownie.", headers={"HX-Redirect": "/app/logowanie"})
         raise HTTPException(303, headers={"Location": "/app/logowanie"})
     return uzytkownik
 
@@ -945,10 +947,20 @@ async def decyduj(
         return szablony.TemplateResponse(
             request,
             "_wiersz_decyzji.html",
-            {"d": d, "wnioskodawca": wnioskodawca, "blad": "Podaj uzasadnienie odmowy lub zwrotu do uzupełnienia"},
+            {
+                "d": d,
+                "wnioskodawca": wnioskodawca,
+                "blad": "Podaj uzasadnienie odmowy lub zwrotu do uzupełnienia",
+                "csrf": token_csrf(request.cookies.get(CIASTECZKO, ""), settings.session_secret.get_secret_value()),
+            },
         )
     wynik = await decyzja_zbiorcza(s, broker, uzytkownik, [id_delegacji], decyzja, uzasadnienie)
-    kontekst = {"d": d, "wnioskodawca": wnioskodawca, "koszt": koszt_delegacji(d)}
+    kontekst = {
+        "d": d,
+        "wnioskodawca": wnioskodawca,
+        "koszt": koszt_delegacji(d),
+        "csrf": token_csrf(request.cookies.get(CIASTECZKO, ""), settings.session_secret.get_secret_value()),
+    }
     if wynik.wstrzymane:
         kontekst.update(wstrzymany=True, blad=wynik.komunikat)
     elif wynik.blad:

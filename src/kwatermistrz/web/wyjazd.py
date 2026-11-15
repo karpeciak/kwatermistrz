@@ -18,7 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..api.organizacja import przyjmij_wybor
-from ..api.zaleznosci import get_broker, get_sesja, sprawdz_csrf
+from ..api.zaleznosci import chron_formularze, get_broker, get_sesja, sprawdz_csrf
 from ..messaging import Broker, Komunikat, Typ
 from ..models import (
     Delegacja,
@@ -33,7 +33,7 @@ from ..models import (
 from ..podroze import WyborPodrozy, zestawienie
 from .strony import biezacy_uzytkownik, strona
 
-router = APIRouter(prefix="/app", include_in_schema=False)
+router = APIRouter(prefix="/app", include_in_schema=False, dependencies=[Depends(chron_formularze)])
 
 # Wybór przejazdu i noclegu jest możliwy po zatwierdzeniu; po zorganizowaniu ekrany są tylko do wglądu
 ETAPY_ORGANIZACJI = (Status.ZATWIERDZONY, Status.ZORGANIZOWANY)

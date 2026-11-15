@@ -5,6 +5,7 @@ Szczegółowe testy wersji roboczej – podzadanie S22IT1S0P2-83.
 
 import pytest
 from fastapi.testclient import TestClient
+from pomoc_sesji import zaloguj_z_csrf
 from sqlalchemy import select
 
 from kwatermistrz.api.main import app, get_broker
@@ -26,7 +27,7 @@ CALOSC = {
 def klient(broker):
     app.dependency_overrides[get_broker] = lambda: broker
     with TestClient(app, follow_redirects=False) as c:
-        c.post("/app/logowanie", data={"id_zolnierza": "ZOL-003"})
+        zaloguj_z_csrf(c, "ZOL-003")
         yield c
     app.dependency_overrides.clear()
 
@@ -57,7 +58,7 @@ def test_wznowienie_tylko_dla_wnioskodawcy(klient):
     pulpit = klient.get("/app/pulpit").text
     assert "Dokończ wniosek" in pulpit and "/app/wnioski/ROB-" not in pulpit
 
-    klient.post("/app/logowanie", data={"id_zolnierza": "ZOL-004"})
+    zaloguj_z_csrf(klient, "ZOL-004")
     assert "Masz niezłożony wniosek" not in klient.get("/app/wnioski/nowy").text
 
 

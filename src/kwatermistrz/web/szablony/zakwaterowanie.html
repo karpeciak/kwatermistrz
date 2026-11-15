@@ -75,6 +75,7 @@
 </article>
 {% else %}
 <form method="post" action="/app/wnioski/{{ d.id_delegacji }}/zakwaterowanie">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
   {% if w_limicie %}
   <fieldset>
     <legend><strong>Obiekty w limicie noclegowym</strong></legend>

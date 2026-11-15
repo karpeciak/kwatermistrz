@@ -20,6 +20,7 @@
   <header><strong>1. Faktyczny czas podróży i zapewnione świadczenia</strong></header>
   {% if edycja %}
   <form method="post" action="/app/wnioski/{{ d.id_delegacji }}/rozliczenie/podroz">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
     <div class="grid">
       <label for="faktyczny_wyjazd">Wyjazd – data i godzina *
         <input id="faktyczny_wyjazd" name="faktyczny_wyjazd" type="datetime-local" required
@@ -60,6 +61,7 @@
   <header><strong>2. Dokumenty kosztowe</strong></header>
   {% if edycja %}
   <form method="post" action="/app/wnioski/{{ d.id_delegacji }}/rozliczenie/dokumenty">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
     <div class="grid">
       <label for="rodzaj">Rodzaj dokumentu *
         <select id="rodzaj" name="rodzaj" required>
@@ -129,6 +131,7 @@
     {% endif %}
     {% if edycja %}
     <form method="post" action="/app/wnioski/{{ d.id_delegacji }}/rozliczenie/zatwierdzenie">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
       <p><small>Sprawdź zestawienie. Po zatwierdzeniu rozliczenie trafi do weryfikacji i nie będzie można go zmieniać.</small></p>
       <button type="submit">Zatwierdź wyliczenie</button>
     </form>
