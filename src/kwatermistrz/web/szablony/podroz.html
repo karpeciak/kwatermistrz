@@ -1,0 +1,89 @@
+{% extends "baza.html" %}
+{% block tytul %}Podróż {{ d.id_delegacji }}{% endblock %}
+{% block tresc %}
+<p class="okruszki"><a href="/app/podroze">Podróże</a> / <a href="/app/wnioski/{{ d.id_delegacji }}">{{ d.id_delegacji }}</a></p>
+<div class="naglowek-strony">
+  <div><h2>Wybór wariantu podróży</h2><p>{{ trasa[0] }} → {{ trasa[1] }} · {{ d.data_wyjazdu.strftime('%d.%m.%Y') if d.data_wyjazdu else '—' }}–{{ d.data_powrotu.strftime('%d.%m.%Y') if d.data_powrotu else '—' }}</p></div>
+  {% if preferowany_transport %}<span class="status duzy">{{ srodki_transportu.get(preferowany_transport, preferowany_transport) }}</span>{% endif %}
+</div>
+<section class="{{ 'bledy' if blad else 'komunikat' }} stan-podrozy" data-komunikat-glowny role="{{ 'alert' if blad else 'status' }}">
+{% if blad %}<strong>Sprawdź wybór</strong><p>{{ blad }}</p>
+{% elif do_uzgodnienia %}<strong>Podróż do uzgodnienia</strong><p>Sprawa została przekazana do dodatkowego uzgodnienia. Decyzja i uzasadnienie są w historii wniosku.</p>
+{% elif rozstrzygniete %}<strong>Decyzja została zapisana.</strong><p>Wybrane przejazdy są zaznaczone poniżej.</p>
+{% elif przekazano %}<strong>Zapisujemy wybór</strong><p>Decyzja przekazana do agenta transportu. <a href="?kryterium={{ kryterium }}">Sprawdź zapis</a>.</p>
+{% elif not warianty %}<strong>Brak danych ofert dla tej trasy</strong><p>{% if moze_wybrac %}Dodaj sprawdzone oferty w obu kierunkach lub przekaż podróż do uzgodnienia.{% else %}Osoba akceptująca musi uzupełnić oferty dla tej trasy.{% endif %}</p>
+{% elif brak_kierunkow %}<strong>Uzupełnij przejazd: {{ brak_kierunkow | join(', ') }}</strong><p>Do wyboru potrzebne są oba kierunki.</p>
+{% elif brak_preferowanego %}<strong>Brak potwierdzonej oferty wnioskowanego transportu</strong><p>{% if preferowany_transport in ['pojazd służbowy', 'transport wojskowy'] %}Dostępność pojazdu musi potwierdzić jednostka.{% else %}Uzupełnij oferty wybranego środka.{% endif %} Inny środek wymaga zgody i uzasadnienia.</p>
+{% elif brak_spojnej_preferowanej_pary %}<strong>Sprawdź godziny przejazdów</strong><p>Wnioskowanym transportem nie ma zgodnej czasowo pary przejazdów. Dodaj wcześniejszy dojazd lub późniejszy powrót.</p>
+{% elif not moze_wybrac %}<strong>Oczekiwanie na wybór</strong><p>{% if d.status == 'zatwierdzony' and uzytkownik.id_zolnierza == d.id_zolnierza %}<a href="/app/wnioski/{{ d.id_delegacji }}/przejazd">Wybierz przejazd</a> na ekranie organizacji wyjazdu.{% else %}Wyboru dokonuje osoba akceptująca zatwierdzoną podróż.{% endif %}</p>
+{% else %}<strong>{{ 'Oferta została zapisana.' if oferta_zapisana else 'Wybierz przejazd w obu kierunkach' }}</strong><p>Rekomendowana para uwzględnia wnioskowany transport i kolejność godzin.{% if not termin_rozpoczecia %} Potwierdź godziny zadania przed zatwierdzeniem.{% endif %}</p>
+{% endif %}
+</section>
+
+{% macro karta(w, pole) %}
+<article class="wariant{% if w.spozniony %} wariant-niedostepny{% endif %}">
+  <label class="wariant-wybor" for="przejazd-{{ w.id_przejazdu }}">
+    <input id="przejazd-{{ w.id_przejazdu }}" type="radio" name="{{ pole }}" value="{{ w.id_przejazdu }}"
+      data-koszt="{{ w.koszt }}" data-przyjazd="{{ w.przyjazd.isoformat() }}"
+      data-odjazd="{{ w.data_przejazdu.isoformat() }}T{{ w.godzina_odjazdu.isoformat() }}"
+      data-zgodny="{{ 'true' if w.zgodny_z_preferencja else 'false' }}" data-rekomendowany="{{ 'true' if w.rekomendowany else 'false' }}"
+      {% if w.status == 'wybrana' or dane_wyboru.get(pole) == w.id_przejazdu | string %}checked{% endif %}
+      {% if not moze_wybrac or rozstrzygniete or w.spozniony %}disabled{% endif %}>
+    <span class="wariant-opis"><span class="wariant-naglowek"><strong>{{ w.przewoznik }}</strong><strong>{{ w.koszt | kwota }}</strong></span>
+      <span>{{ w.godzina_odjazdu.strftime('%H:%M') }} → {{ w.przyjazd.strftime('%H:%M') }} · {{ w.czas_min }} min · {{ srodki_transportu.get(w.srodek_transportu, w.srodek_transportu) }}</span>
+      <small>{{ w.data_przejazdu.strftime('%d.%m.%Y') }} → {{ w.przyjazd.strftime('%d.%m.%Y') }}</small>
+      {% if w.status == 'wybrana' %}<small class="etykieta">Wybrany przejazd</small>
+      {% elif w.rekomendowany %}<small class="etykieta">Rekomendowany: {{ kryteria[kryterium] }}</small>
+      {% elif w.spozniony %}<small class="blad">Przyjazd po rozpoczęciu szkolenia</small>
+      {% elif not w.zgodny_z_preferencja %}<small>Zmiana środka transportu</small>{% endif %}
+    </span>
+  </label>
+  <details class="szczegoly-wariantu"><summary>Szczegóły i źródło</summary>
+    <dl class="metryki"><dt>Przesiadki</dt><dd>{{ w.liczba_przesiadek }}</dd><dt>Punktualność</dt><dd>{{ '%.0f'|format(w.punktualnosc * 100) }}%</dd><dt>Bezpieczeństwo</dt><dd>{{ w.bezpieczenstwo }}/5</dd></dl>
+    {% if w.rekomendowany %}<p>{{ w.podstawa_rekomendacji }}</p>{% endif %}
+    <p>{{ w.uzasadnienie }}</p>{% if w.zrodlo %}<small>{{ w.zrodlo }}</small>{% endif %}
+  </details>
+</article>
+{% endmacro %}
+
+{% if warianty and not rozstrzygniete %}
+<form method="get" class="porownanie-kryterium">
+  <label for="kryterium">Porównaj według<select id="kryterium" name="kryterium">{% for wartosc, opis in kryteria.items() %}<option value="{{ wartosc }}" {% if kryterium == wartosc %}selected{% endif %}>{{ opis }}</option>{% endfor %}</select></label>
+  <button type="submit" class="secondary outline">Porównaj ponownie</button>
+</form>
+{% endif %}
+<form method="post" id="wybor-podrozy" action="/app/wnioski/{{ d.id_delegacji }}/podroz" data-termin="{{ termin_rozpoczecia.isoformat() if termin_rozpoczecia else '' }}">
+  <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="kryterium" value="{{ kryterium }}">
+  <div class="kierunki-podrozy">
+  {% for kierunek, pole in [('Tam', 'id_tam'), ('Powrót', 'id_powrot')] %}
+  {% set grupa = warianty | selectattr('kierunek', 'equalto', kierunek) | list %}
+  {% if grupa %}<fieldset><legend><strong>{{ kierunek }}</strong></legend>
+    {% for w in grupa if w.zgodny_z_preferencja or rozstrzygniete %}{{ karta(w, pole) }}{% endfor %}
+    {% set inne = grupa | rejectattr('zgodny_z_preferencja') | list %}
+    {% if inne and not rozstrzygniete %}<details class="alternatywy" {% if dane_wyboru %}open{% endif %}><summary>Inne środki transportu ({{ inne | length }})</summary>{% for w in inne %}{{ karta(w, pole) }}{% endfor %}</details>{% endif %}
+  </fieldset>{% endif %}{% endfor %}
+  </div>
+  {% if moze_wybrac and not rozstrzygniete %}
+  <div class="zapis-wyboru">
+    {% if warianty %}<p id="podsumowanie-wyboru" aria-live="polite">Wybierz przejazd tam i z powrotem.</p>{% endif %}
+    <label id="zgoda-transport">
+      <input type="checkbox" name="zgoda_na_zmiane_transportu" value="true" {% if dane_wyboru.get('zgoda_na_zmiane_transportu') %}checked{% endif %}>
+      Akceptuję zmianę wnioskowanego środka transportu.
+    </label>
+    <label for="uzasadnienie">Uzasadnienie <small>(przy odstępstwie lub uzgodnieniu)</small></label>
+    <textarea id="uzasadnienie" name="uzasadnienie" rows="2" maxlength="2000">{{ dane_wyboru.get('uzasadnienie', '') }}</textarea>
+    <div class="przyciski-formularza">
+      {% if mozna_zatwierdzic %}<button id="zatwierdz-przejazdy" type="submit" name="akcja" value="wybierz">Zatwierdź oba przejazdy</button>{% endif %}
+      <button type="submit" name="akcja" value="odrzuc" class="secondary outline">{% if warianty %}Odrzuć wszystkie — do uzgodnienia{% else %}Przekaż do uzgodnienia{% endif %}</button>
+    </div>
+  </div>{% endif %}
+</form>
+{% include '_oferta_podrozy.html' %}
+<details class="panel-dodatkowy"><summary>Zasady porównania i dane ofert</summary>
+  <p>Najpierw sprawdzamy transport i terminy, potem wybrane kryterium, koszt, bezpieczeństwo, przesiadki, punktualność i czas.</p>
+  {% if istotna_roznica_czasu %}<p>Warianty różnią się czasem o ponad godzinę. Rozważ kryterium czasu lub punktualności.</p>{% endif %}
+  <p>{% if not termin_rozpoczecia %}Termin rozpoczęcia zadania nie jest ustalony — sprawdź godzinę dojazdu. {% endif %}{{ uwaga }}</p>
+  <p>Dane przewoźników nie są pobierane automatycznie. Oferty z ewidencji są przykładowe. Dostępność i warunki potwierdza przewoźnik lub jednostka.</p>
+</details>
+<script src="/statyczne/podroz.js" defer></script>
+{% endblock %}

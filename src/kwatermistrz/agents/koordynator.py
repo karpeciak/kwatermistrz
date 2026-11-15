@@ -117,10 +117,10 @@ def brakujace_elementy_organizacji(s: Session, d: Delegacja) -> list[str]:
     brakuje = []
     if s.scalar(select(PolecenieWyjazdu.numer).where(PolecenieWyjazdu.id_delegacji == d.id_delegacji)) is None:
         brakuje.append("polecenie wyjazdu")
-    wybrany_przejazd = select(Przejazd.id_przejazdu).where(
+    wybrany_przejazd = select(Przejazd.kierunek).where(
         Przejazd.id_delegacji == d.id_delegacji, Przejazd.status == StatusRezerwacji.WYBRANA
     )
-    if s.scalar(wybrany_przejazd) is None:
+    if not {"Tam", "Powrót"} <= set(s.scalars(wybrany_przejazd)):
         brakuje.append("przejazd")
     wybrany_nocleg = select(Zakwaterowanie.id_zakwaterowania).where(
         Zakwaterowanie.id_delegacji == d.id_delegacji, Zakwaterowanie.status == StatusRezerwacji.WYBRANA

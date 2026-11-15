@@ -167,6 +167,19 @@ def test_delegacja_zorganizowana_gdy_sa_polecenie_przejazd_i_nocleg(broker):
             )
         )
     wynik(Typ.WYNIK_ZAKWATEROWANIA)
+    assert status(id_d) == Status.ZATWIERDZONY  # brakuje jeszcze powrotu
+    with sesja() as s:
+        s.add(
+            Przejazd(
+                id_delegacji=id_d,
+                kierunek="Powrót",
+                srodek_transportu="kolej",
+                data_przejazdu=dzien,
+                status=StatusRezerwacji.WYBRANA,
+                id_polaczenia="POL-02-P",
+            )
+        )
+    wynik(Typ.WYNIK_TRANSPORTU)
     assert status(id_d) == Status.ZORGANIZOWANY
 
 
@@ -186,7 +199,7 @@ def test_daty_przesuwaja_delegacje_w_trakcie_i_do_rozliczenia(broker):
     assert status(zakonczona) == Status.DO_ROZLICZENIA
 
 
-def test_zadania_w_budowie_sa_odnotowane_w_logu(broker):
+def test_brak_danych_transportu_jest_odnotowany_w_logu(broker):
     id_d = utworz(status=Status.ZATWIERDZONY)
     agent = AGENCI["transport"](broker)
     k = Komunikat(typ=Typ.ZADANIE_TRANSPORTU, id_delegacji=id_d)

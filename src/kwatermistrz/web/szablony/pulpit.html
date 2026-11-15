@@ -24,7 +24,7 @@
 <div class="overflow-auto">
   <table>
     <thead>
-      <tr><th>Numer</th><th>Cel</th><th>Miejsce</th><th>Termin</th><th>Status</th><th>Czeka u</th><th>Na etapie</th></tr>
+      <tr><th>Numer</th><th>Cel</th><th>Miejsce</th><th>Termin</th><th>Status</th><th>Czeka u</th><th>Na etapie</th><th>Podróż</th></tr>
     </thead>
     <tbody>
       {% for d in wnioski %}
@@ -41,10 +41,12 @@
             {% if d.przekazano_zastepcy %}<br><small>przekazano zastępcy</small>
             {% elif d.liczba_przypomnien %}<br><small>wysłano przypomnienie</small>{% endif %}
           {% elif d.status == "do uzupełnienia" %}u Ciebie – uzupełnij wniosek
-          {% elif d.status in ("złożony", "zatwierdzony") %}agenci systemu
+          {% elif d.status == "złożony" %}system
+          {% elif d.status == "zatwierdzony" %}<a href="/app/wnioski/{{ d.id_delegacji }}">Sprawdź etap</a>
           {% else %}–{% endif %}
         </td>
         <td class="bez-lamania">{{ d.data_zmiany_statusu | czas_na_etapie }}</td>
+        <td>{% if d.status in ["zatwierdzony", "zorganizowany", "w trakcie", "do rozliczenia", "rozliczony"] %}<a href="/app/wnioski/{{ d.id_delegacji }}/podroz">Przejazdy</a>{% else %}—{% endif %}</td>
       </tr>
       {% endfor %}
     </tbody>

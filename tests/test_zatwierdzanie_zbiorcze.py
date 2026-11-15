@@ -6,6 +6,7 @@ from decimal import Decimal
 
 import pytest
 from fastapi.testclient import TestClient
+from pomoc_sesji import zaloguj_z_csrf
 from sqlalchemy import select
 
 from kwatermistrz.agents import AGENCI
@@ -15,7 +16,6 @@ from kwatermistrz.db import sesja
 from kwatermistrz.messaging import Typ
 from kwatermistrz.models import Delegacja, Jednostka, LogDecyzji, Status
 from kwatermistrz.stawki import szacuj_koszt
-from kwatermistrz.web.strony import CIASTECZKO
 
 
 @pytest.fixture
@@ -27,7 +27,7 @@ def klient(broker):
 
 
 def zaloguj(klient, id_zolnierza):
-    klient.cookies.set(CIASTECZKO, id_zolnierza)
+    zaloguj_z_csrf(klient, id_zolnierza)
 
 
 def dodaj_wnioski(*koszty, id_zatwierdzajacego="ZOL-001") -> list[str]:

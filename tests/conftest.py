@@ -54,3 +54,13 @@ def baza():
 @pytest.fixture
 def broker() -> AtrapaBrokera:
     return AtrapaBrokera()
+
+
+@pytest.fixture(autouse=True)
+def bez_zewnetrznego_api(monkeypatch):
+    """Testy nie mogą przez przypadek wysłać zapytania do Photon/OpenStreetMap."""
+
+    def zabronione(*args, **kwargs):
+        raise AssertionError("Zewnętrzne API w teście: podmień wyszukiwanie miejscowości lub transport HTTP")
+
+    monkeypatch.setattr("kwatermistrz.miejscowosci.urlopen", zabronione)
