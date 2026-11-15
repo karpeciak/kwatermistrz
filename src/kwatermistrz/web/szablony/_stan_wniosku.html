@@ -43,6 +43,8 @@
     </div>
     {% if d.status == "do rozliczenia" and uzytkownik.id_zolnierza == d.id_zolnierza %}
     <p><a href="/app/wnioski/{{ d.id_delegacji }}/rozliczenie" role="button">Przejdź do rozliczenia</a></p>
+    {% elif d.status == "rozliczony" and uzytkownik.id_zolnierza == d.id_zolnierza %}
+    <p><a href="/app/wnioski/{{ d.id_delegacji }}/rozliczenie" role="button" class="outline">Zobacz rozliczenie</a></p>
     {% endif %}
     {% if d.status in ["zatwierdzony", "zorganizowany", "w trakcie", "rozliczony"] %}
     <a href="/app/wnioski/{{ d.id_delegacji }}/podroz" role="button" class="outline">Przejazdy i wybór podróży</a>

@@ -149,4 +149,75 @@
   <p id="wyliczenie">Wyliczenie pojawi się tutaj po uzupełnieniu czasu podróży i dokumentów kosztowych.</p>
   {% endif %}
 </article>
+
+{# S22IT1S0P2-43: weryfikacja przez Agenta Zgodności, akceptacja albo zastrzeżenia, przekazanie do finansów #}
+{% if r and not edycja %}
+<article>
+  <header><strong>4. Weryfikacja i przekazanie do komórki finansowej</strong></header>
+  {% set czeka = (r.status == "gotowe do weryfikacji" and wynik == "weryfikacja-zlecona")
+                 or (r.status == "zweryfikowane" and wynik == "przekazanie-zlecone") %}
+  {% if czeka %}
+  {# Agent Zgodności pracuje w tle – fragment odświeża się sam, aż zmieni się status #}
+  <div id="weryfikacja" hx-get="/app/wnioski/{{ d.id_delegacji }}/rozliczenie?wynik={{ wynik }}"
+       hx-trigger="every 3s" hx-select="#weryfikacja" hx-swap="outerHTML">
+    <p aria-busy="true">{{ "Agent Zgodności weryfikuje wyliczenie…" if r.status == "gotowe do weryfikacji" else "Przekazywanie rozliczenia…" }}</p>
+  </div>
+  {% else %}
+  <div id="weryfikacja">
+    {% if r.status == "gotowe do weryfikacji" %}
+    <form method="post" action="/app/wnioski/{{ d.id_delegacji }}/rozliczenie/przekazanie">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <p><small>Agent Zgodności sprawdzi wyliczenie ze stawkami, limitami i dokumentami i poprawi ewentualne niezgodności.</small></p>
+      <button type="submit">Przekaż do weryfikacji</button>
+    </form>
+    {% else %}
+    <dl class="podsumowanie">
+      <dt>Status rozliczenia</dt><dd><strong>{{ r.status }}</strong></dd>
+      <dt>Kwota należności po weryfikacji</dt><dd>{{ r.kwota_naleznosci | kwota }}</dd>
+      {% if r.data_przekazania %}<dt>Przekazano</dt><dd>{{ r.data_przekazania.strftime('%d.%m.%Y %H:%M') }}</dd>{% endif %}
+      {% if r.zastrzezenia %}<dt>Twoje zastrzeżenia</dt><dd>{{ r.zastrzezenia }}</dd>{% endif %}
+    </dl>
+    {% if korekty %}
+    <p class="komunikat ostrzezenie">Agent Zgodności poprawił wyliczenie ({{ korekty | length }}):</p>
+    <div class="overflow-auto">
+      <table>
+        <thead><tr><th scope="col">Pozycja</th><th scope="col">Było</th><th scope="col">Jest</th><th scope="col">Powód</th></tr></thead>
+        <tbody>
+          {% for k in korekty %}
+          <tr>
+            <td>{{ k.pozycja }}</td>
+            <td class="bez-lamania">{{ k.wartosc_przed | kwota }}</td>
+            <td class="bez-lamania">{{ k.wartosc_po | kwota }}</td>
+            <td>{{ k.powod }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <p>Wyliczenie zgodne ze stawkami, limitami i dokumentami – bez korekt.</p>
+    {% endif %}
+
+    {% if r.status == "zweryfikowane" %}
+    <form method="post" action="/app/wnioski/{{ d.id_delegacji }}/rozliczenie/akceptacja">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <button type="submit">Akceptuję – przekaż do komórki finansowej</button>
+    </form>
+    <details>
+      <summary>Nie zgadzam się z wynikiem weryfikacji</summary>
+      <form method="post" action="/app/wnioski/{{ d.id_delegacji }}/rozliczenie/akceptacja">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <label for="zastrzezenia">Zastrzeżenia *
+          <textarea id="zastrzezenia" name="zastrzezenia" rows="3" maxlength="1000" required></textarea>
+        </label>
+        <small>Rozliczenie zostanie przekazane razem z Twoimi zastrzeżeniami.</small>
+        <button type="submit" class="secondary">Przekaż z zastrzeżeniami</button>
+      </form>
+    </details>
+    {% endif %}
+    {% endif %}
+  </div>
+  {% endif %}
+</article>
+{% endif %}
 {% endblock %}
