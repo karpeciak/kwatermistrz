@@ -26,9 +26,24 @@ from sqlalchemy.orm import Session
 
 from ..agents.koordynator import brakujace_elementy_organizacji
 from ..api.organizacja import przyjmij_wariant, przyjmij_wybor
-from ..api.rozliczenia import KOMUNIKAT_PRZYJETY, DokumentKosztowyIn, przyjmij_dokument
+from ..api.rozliczenia import (
+    KOMUNIKAT_PRZYJETY,
+    KOMUNIKAT_ZATWIERDZONE,
+    DokumentKosztowyIn,
+    mozna_edytowac,
+    przyjmij_dokument,
+    zapisz_podroz,
+    zatwierdz_wyliczenie,
+    zlec_wyliczenie,
+)
 from ..api.schemas import WniosekIn
-from ..api.wnioski import zarejestruj_wniosek
+from ..api.wnioski import (
+    etap_przygotowania,
+    usun_wersje_robocza,
+    wersja_robocza,
+    zapisz_wersje_robocza,
+    zarejestruj_wniosek,
+)
 from ..api.zaleznosci import dostep_do_podrozy, get_broker, get_sesja, sprawdz_csrf
 from ..api.zatwierdzenia import (
     budzet_jednostki,
@@ -440,19 +455,23 @@ async def wybierz_podroz(
 def pulpit(request: Request, s: Session = Depends(get_sesja), uzytkownik: Zolnierz = Depends(biezacy_uzytkownik)):
     wnioski = s.scalars(
         select(Delegacja)
-        .where(Delegacja.id_zolnierza == uzytkownik.id_zolnierza)
+        .where(Delegacja.id_zolnierza == uzytkownik.id_zolnierza, Delegacja.status != Status.ROBOCZY)
         .order_by(Delegacja.data_zmiany_statusu.desc())
     ).all()
     id_osob = {d.id_zatwierdzajacego for d in wnioski if d.id_zatwierdzajacego}
     osoby = {z.id_zolnierza: z for z in s.scalars(select(Zolnierz).where(Zolnierz.id_zolnierza.in_(id_osob)))}
-    return strona(request, s, "pulpit.html", uzytkownik, wnioski=wnioski, osoby=osoby)
+    robocza = wersja_robocza(s, uzytkownik.id_zolnierza)
+    return strona(request, s, "pulpit.html", uzytkownik, wnioski=wnioski, osoby=osoby, robocza=robocza)
 
 
 @router.get("/wnioski/nowy", response_class=HTMLResponse)
 def nowy_wniosek(request: Request, s: Session = Depends(get_sesja), uzytkownik: Zolnierz = Depends(biezacy_uzytkownik)):
     przedsiewziecia = s.scalars(select(Przedsiewziecie).order_by(Przedsiewziecie.data_rozpoczecia)).all()
     jednostka = s.get(Jednostka, uzytkownik.id_jednostki)
-    return strona(request, s, "nowy_wniosek.html", uzytkownik, przedsiewziecia=przedsiewziecia, jednostka=jednostka)
+    robocza = wersja_robocza(s, uzytkownik.id_zolnierza)  # S22IT1S0P2-80: wznowienie
+    kontekst = dict(przedsiewziecia=przedsiewziecia, jednostka=jednostka, robocza=robocza)
+    w = robocza.dane_wniosku if robocza else None
+    return strona(request, s, "nowy_wniosek.html", uzytkownik, **kontekst, w=w)
 
 
 @router.post("/wnioski/nowy")
@@ -538,6 +557,8 @@ def podsumowanie_wniosku(
     }
     jednostka = s.get(Jednostka, uzytkownik.id_jednostki)
     bledy = [] if popraw else waliduj_wniosek(w, jednostka=uzytkownik.id_jednostki)
+    etap = etap_przygotowania(w) if popraw or bledy else "podsumowanie"
+    zapisz_wersje_robocza(s, uzytkownik.id_zolnierza, w, etap)  # S22IT1S0P2-37
     if popraw or bledy:
         # scenariusz 3a–4a: wskazanie brakujących lub błędnych danych, formularz z wpisanymi już wartościami
         przedsiewziecia = s.scalars(select(Przedsiewziecie).order_by(Przedsiewziecie.data_rozpoczecia)).all()
@@ -547,6 +568,64 @@ def podsumowanie_wniosku(
     liczba_dni = (parsuj_date(w["data_powrotu"]) - parsuj_date(w["data_wyjazdu"])).days + 1
     kontekst = dict(w=w, jednostka=jednostka, przedsiewziecie=p, liczba_dni=liczba_dni)
     return strona(request, s, "podsumowanie_wniosku.html", uzytkownik, **kontekst)
+
+
+# ---------------------------------------------------------------- wersja robocza wniosku (S22IT1S0P2-37)
+
+POLA_WNIOSKU = (
+    "id_przedsiewziecia",
+    "cel_wyjazdu",
+    "miejsce_docelowe",
+    "data_wyjazdu",
+    "data_powrotu",
+    "podstawa_numer_rozkazu",
+    "podstawa_data_rozkazu",
+    "srodek_transportu",
+)
+
+
+def dane_z_formularza(formularz) -> dict:
+    """Dane wniosku z formularza w postaci zapisywanej w wersji roboczej."""
+    w = {pole: str(formularz.get(pole) or "").strip() for pole in POLA_WNIOSKU}
+    w["potrzeba_zakwaterowania"] = formularz.get("potrzeba_zakwaterowania") == "true"
+    w["dane_transportu"] = dane_pojazdu(
+        w["srodek_transportu"],
+        str(formularz.get("nr_rejestracyjny") or ""),
+        str(formularz.get("pojemnosc_silnika") or ""),
+    )
+    return w
+
+
+@router.post("/wnioski/nowy/roboczy", response_class=HTMLResponse)
+async def zapisz_wersje_robocza_w_interfejsie(
+    request: Request,
+    wyjdz: bool = False,
+    s: Session = Depends(get_sesja),
+    uzytkownik: Zolnierz = Depends(biezacy_uzytkownik),
+):
+    """S22IT1S0P2-79: autozapis podczas wypełniania (HTMX) albo „Zapisz i dokończ później”."""
+    w = dane_z_formularza(await request.form())
+    d = zapisz_wersje_robocza(s, uzytkownik.id_zolnierza, w, etap_przygotowania(w))
+    if wyjdz:
+        return RedirectResponse("/app/pulpit?wynik=wersja-robocza", status_code=303)
+    return HTMLResponse(f"<small>Zapisano wersję roboczą · {czas_lokalny(d.data_ostatniej_zmiany)}</small>")
+
+
+@router.post("/wnioski/nowy/roboczy/rezygnacja", response_class=HTMLResponse)
+def rezygnacja_z_wersji_roboczej(
+    request: Request,
+    s: Session = Depends(get_sesja),
+    uzytkownik: Zolnierz = Depends(biezacy_uzytkownik),
+):
+    """S22IT1S0P2-81, scenariusz 5a–6a: usunięcie zachowanych danych i nowy, pusty wniosek."""
+    usun_wersje_robocza(s, uzytkownik.id_zolnierza)
+    s.commit()
+    kontekst = dict(
+        przedsiewziecia=s.scalars(select(Przedsiewziecie).order_by(Przedsiewziecie.data_rozpoczecia)).all(),
+        jednostka=s.get(Jednostka, uzytkownik.id_jednostki),
+        komunikat="Usunięto wersję roboczą – możesz zacząć nowy wniosek.",
+    )
+    return strona(request, s, "nowy_wniosek.html", uzytkownik, **kontekst)
 
 
 def dane_wniosku(s: Session, id_delegacji: str, uzytkownik: Zolnierz) -> dict:
@@ -589,7 +668,7 @@ def dane_wniosku(s: Session, id_delegacji: str, uzytkownik: Zolnierz) -> dict:
             if not porownanie["mozna_zatwierdzic"] or porownanie["brak_spojnej_preferowanej_pary"]:
                 oczekiwanie = "Brak kompletu odpowiednich przejazdów. Podróż wymaga uzgodnienia."
             else:
-                oczekiwanie = "Warianty są przygotowane. Oczekiwanie na wybór podróży przez osobę akceptującą."
+                oczekiwanie = "Warianty są przygotowane. Oczekiwanie na wybór podróży."
             odswiezaj = False
         else:
             oczekiwanie = "Oczekiwanie na przygotowanie wariantów podróży."
@@ -670,7 +749,11 @@ def rozliczenie(
     s: Session = Depends(get_sesja),
     uzytkownik: Zolnierz = Depends(biezacy_uzytkownik),
 ):
-    komunikat = {WYNIK_DOKUMENT_PRZYJETY: KOMUNIKAT_PRZYJETY, WYNIK_PODROZ_ZAPISANA: KOMUNIKAT_PODROZ}.get(wynik)
+    komunikat = {
+        WYNIK_DOKUMENT_PRZYJETY: KOMUNIKAT_PRZYJETY,
+        WYNIK_PODROZ_ZAPISANA: KOMUNIKAT_PODROZ,
+        WYNIK_ZATWIERDZONO: KOMUNIKAT_ZATWIERDZONO,
+    }.get(wynik)
     return strona(
         request,
         s,
@@ -694,7 +777,7 @@ def _liczba_posilkow(tekst: str) -> int | None:
 
 
 @router.post("/wnioski/{id_delegacji}/rozliczenie/podroz", response_class=HTMLResponse)
-def zapisz_podroz_w_interfejsie(
+async def zapisz_podroz_w_interfejsie(
     id_delegacji: str,
     request: Request,
     faktyczny_wyjazd: str = Form(""),
@@ -704,9 +787,10 @@ def zapisz_podroz_w_interfejsie(
     kolacje: str = Form("0"),
     bezplatne_zakwaterowanie: bool = Form(False),
     s: Session = Depends(get_sesja),
+    broker: Broker = Depends(get_broker),
     uzytkownik: Zolnierz = Depends(biezacy_uzytkownik),
 ):
-    """S22IT1S0P2-60: faktyczny czas podróży i zapewnione świadczenia w rozliczeniu delegacji."""
+    """S22IT1S0P2-60, -61: czas podróży i świadczenia → wyliczenie należności przez Agenta Rozliczeń."""
     kontekst = dane_rozliczenia(s, id_delegacji, uzytkownik)
     try:
         wyjazd, powrot = datetime.fromisoformat(faktyczny_wyjazd), datetime.fromisoformat(faktyczny_powrot)
@@ -715,7 +799,9 @@ def zapisz_podroz_w_interfejsie(
     posilki = {"śniadanie": sniadania, "obiad": obiady, "kolacja": kolacje}
     liczby = {posilek: _liczba_posilkow(tekst) for posilek, tekst in posilki.items()}
     komunikat = None
-    if wyjazd is None or powrot is None:
+    if not mozna_edytowac(kontekst["rozliczenie"]):
+        komunikat = KOMUNIKAT_ZATWIERDZONE
+    elif wyjazd is None or powrot is None:
         komunikat = "Podaj datę i godzinę wyjazdu oraz powrotu."
     elif powrot <= wyjazd:
         komunikat = "Powrót musi nastąpić po wyjeździe."
@@ -724,20 +810,34 @@ def zapisz_podroz_w_interfejsie(
     if komunikat:
         return strona(request, s, "rozliczenie.html", uzytkownik, **kontekst, komunikat=komunikat, blad=True)
 
-    rozliczenie = kontekst["rozliczenie"]
-    if rozliczenie is None:
-        rozliczenie = Rozliczenie(id_delegacji=id_delegacji)
-        s.add(rozliczenie)
-    rozliczenie.faktyczny_wyjazd = wyjazd
-    rozliczenie.faktyczny_powrot = powrot
-    rozliczenie.zapewnione_posilki = {posilek: liczba for posilek, liczba in liczby.items() if liczba}
-    rozliczenie.bezplatne_zakwaterowanie = bezplatne_zakwaterowanie
-    s.commit()
+    zapisz_podroz(s, kontekst["d"], wyjazd, powrot, liczby, bezplatne_zakwaterowanie)
+    await zlec_wyliczenie(s, broker, kontekst["d"])
     return RedirectResponse(f"/app/wnioski/{id_delegacji}/rozliczenie?wynik={WYNIK_PODROZ_ZAPISANA}", status_code=303)
 
 
+WYNIK_ZATWIERDZONO = "wyliczenie-zatwierdzone"
+KOMUNIKAT_ZATWIERDZONO = "Wyliczenie zatwierdzone – rozliczenie przekazano do weryfikacji."
+
+
+@router.post("/wnioski/{id_delegacji}/rozliczenie/zatwierdzenie", response_class=HTMLResponse)
+async def zatwierdz_wyliczenie_w_interfejsie(
+    id_delegacji: str,
+    request: Request,
+    s: Session = Depends(get_sesja),
+    broker: Broker = Depends(get_broker),
+    uzytkownik: Zolnierz = Depends(biezacy_uzytkownik),
+):
+    """S22IT1S0P2-36: delegowany zatwierdza wyliczenie należności – rozliczenie gotowe do weryfikacji."""
+    kontekst = dane_rozliczenia(s, id_delegacji, uzytkownik)
+    komunikat = await zatwierdz_wyliczenie(s, broker, kontekst["d"])
+    if komunikat:
+        kontekst = dane_rozliczenia(s, id_delegacji, uzytkownik)
+        return strona(request, s, "rozliczenie.html", uzytkownik, **kontekst, komunikat=komunikat, blad=True)
+    return RedirectResponse(f"/app/wnioski/{id_delegacji}/rozliczenie?wynik={WYNIK_ZATWIERDZONO}", status_code=303)
+
+
 @router.post("/wnioski/{id_delegacji}/rozliczenie/dokumenty", response_class=HTMLResponse)
-def dodaj_dokument_w_interfejsie(
+async def dodaj_dokument_w_interfejsie(
     id_delegacji: str,
     request: Request,
     rodzaj: str = Form(...),
@@ -745,6 +845,7 @@ def dodaj_dokument_w_interfejsie(
     data: str = Form(...),
     kwota: str = Form(...),
     s: Session = Depends(get_sesja),
+    broker: Broker = Depends(get_broker),
     uzytkownik: Zolnierz = Depends(biezacy_uzytkownik),
 ):
     kontekst = dane_rozliczenia(s, id_delegacji, uzytkownik)
@@ -762,6 +863,7 @@ def dodaj_dokument_w_interfejsie(
         )
     wynik = przyjmij_dokument(s, kontekst["d"], dane)
     if wynik.przyjeto:
+        await zlec_wyliczenie(s, broker, kontekst["d"])
         return RedirectResponse(
             f"/app/wnioski/{id_delegacji}/rozliczenie?wynik={WYNIK_DOKUMENT_PRZYJETY}", status_code=303
         )

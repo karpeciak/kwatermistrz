@@ -6,6 +6,15 @@
   <a href="/app/wnioski/nowy" role="button">Nowy wniosek</a>
 </div>
 
+{# S22IT1S0P2-37: niezłożony wniosek – widoczny tylko dla wnioskodawcy #}
+{% if request.query_params.get("wynik") == "wersja-robocza" %}
+<p class="komunikat" role="status">Zapisano wersję roboczą wniosku – możesz do niej wrócić w dowolnym momencie.</p>
+{% endif %}
+{% if robocza %}
+<p class="komunikat">Masz niezłożony wniosek (ostatnia zmiana {{ robocza.data_ostatniej_zmiany | czas }},
+  etap: {{ robocza.etap_przygotowania }}). <a href="/app/wnioski/nowy">Dokończ wniosek</a></p>
+{% endif %}
+
 {% if do_zatwierdzenia %}
 <p class="komunikat">Masz <strong>{{ do_zatwierdzenia }}</strong> wniosek(i) oczekujące na Twoją decyzję –
   <a href="/app/do-zatwierdzenia">przejdź do zatwierdzania</a>.</p>

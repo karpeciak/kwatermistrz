@@ -71,7 +71,7 @@ def test_migracja_bazy_sprzed_sprintu_1_zachowuje_dane(tmp_path):
         wersja = polaczenie.execute(text("SELECT version_num FROM alembic_version")).scalar()
     assert status == Status.W_AKCEPTACJI
     assert od_kiedy is not None
-    assert wersja == "0002"
+    assert wersja == "0003"
 
 
 # ---------------------------------------------------------------- dane słownikowe

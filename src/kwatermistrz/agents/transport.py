@@ -163,8 +163,8 @@ class AgentTransportu(Agent):
 
     def zapisz_wybor(self, s: Session, k: Komunikat, ktx: Kontekst) -> None:
         d = zablokuj_delegacje(s, k.id_delegacji)
-        if not d.id_zatwierdzajacego or k.dane.get("id_osoby") != d.id_zatwierdzajacego:
-            raise BladProcesu("Wyboru może dokonać tylko osoba akceptująca podróż")
+        if k.dane.get("id_osoby") not in {d.id_zolnierza, d.id_zatwierdzajacego} - {None}:
+            raise BladProcesu("Wyboru może dokonać delegowany lub osoba akceptująca podróż")
         try:
             wybor = WyborPodrozy.model_validate({key: value for key, value in k.dane.items() if key != "id_osoby"})
             rows = przejazdy(s, d)

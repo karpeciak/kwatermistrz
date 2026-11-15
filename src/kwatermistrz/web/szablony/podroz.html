@@ -15,7 +15,7 @@
 {% elif brak_kierunkow %}<strong>Uzupełnij przejazd: {{ brak_kierunkow | join(', ') }}</strong><p>Do wyboru potrzebne są oba kierunki.</p>
 {% elif brak_preferowanego %}<strong>Brak potwierdzonej oferty wnioskowanego transportu</strong><p>{% if preferowany_transport in ['pojazd służbowy', 'transport wojskowy'] %}Dostępność pojazdu musi potwierdzić jednostka.{% else %}Uzupełnij oferty wybranego środka.{% endif %} Inny środek wymaga zgody i uzasadnienia.</p>
 {% elif brak_spojnej_preferowanej_pary %}<strong>Sprawdź godziny przejazdów</strong><p>Wnioskowanym transportem nie ma zgodnej czasowo pary przejazdów. Dodaj wcześniejszy dojazd lub późniejszy powrót.</p>
-{% elif not moze_wybrac %}<strong>Oczekiwanie na wybór</strong><p>Wyboru dokonuje osoba akceptująca zatwierdzoną podróż.</p>
+{% elif not moze_wybrac %}<strong>Oczekiwanie na wybór</strong><p>{% if d.status == 'zatwierdzony' and uzytkownik.id_zolnierza == d.id_zolnierza %}<a href="/app/wnioski/{{ d.id_delegacji }}/przejazd">Wybierz przejazd</a> na ekranie organizacji wyjazdu.{% else %}Wyboru dokonuje osoba akceptująca zatwierdzoną podróż.{% endif %}</p>
 {% else %}<strong>{{ 'Oferta została zapisana.' if oferta_zapisana else 'Wybierz przejazd w obu kierunkach' }}</strong><p>Rekomendowana para uwzględnia wnioskowany transport i kolejność godzin.{% if not termin_rozpoczecia %} Potwierdź godziny zadania przed zatwierdzeniem.{% endif %}</p>
 {% endif %}
 </section>

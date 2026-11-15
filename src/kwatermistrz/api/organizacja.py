@@ -39,8 +39,12 @@ def warianty_podrozy(
     return zestawienie(s, dostep_do_podrozy(s, id_delegacji, uzytkownik), kryterium)
 
 
-async def przyjmij_wybor(s: Session, broker: Broker, id_delegacji: str, u: Zolnierz, wybor: WyborPodrozy):
-    d = dostep_do_podrozy(s, id_delegacji, u, zapis=True)
+async def przyjmij_wybor(
+    s: Session, broker: Broker, id_delegacji: str, u: Zolnierz, wybor: WyborPodrozy, *, delegowany: bool = False
+):
+    d = dostep_do_podrozy(s, id_delegacji, u, zapis=not delegowany)
+    if delegowany and u.id_zolnierza != d.id_zolnierza:
+        raise HTTPException(403, "Ten ekran jest przeznaczony dla delegowanego")
     try:
         sprawdz_decyzje(s, d, wybor)
     except BladPodrozy as e:

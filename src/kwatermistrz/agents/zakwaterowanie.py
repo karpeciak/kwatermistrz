@@ -37,5 +37,8 @@ class AgentZakwaterowania(Agent):
         do_zrobienia(ktx, "S22IT1S0P2-39")
 
     def zapisz_wybor(self, s: Session, k: Komunikat, ktx: Kontekst) -> None:
-        pobierz_delegacje(s, k.id_delegacji)
-        do_zrobienia(ktx, "S22IT1S0P2-39")
+        # S22IT1S0P2-99: rezerwacja wybranego obiektu – logika w agents/rezerwacja.py
+        # (import lokalny, żeby nie ruszać importów modułu, nad którym pracuje S22IT1S0P2-97/-98)
+        from .rezerwacja import zapisz_wybor_zakwaterowania
+
+        zapisz_wybor_zakwaterowania(s, k, ktx)

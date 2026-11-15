@@ -7,19 +7,20 @@ if /i "%~1"=="--help" goto help
 
 call :check_branch
 if errorlevel 1 goto failed
+git fetch origin --prune
+if errorlevel 1 goto failed
+git merge-base --is-ancestor origin/main HEAD
+if errorlevel 2 goto failed
+if errorlevel 1 (
+    echo Pobrano nowe zmiany main. Najpierw przeanalizuj i scal je z galezia robocza; dotychczasowe commity sa zachowane.
+    goto failed
+)
 ".venv\Scripts\python.exe" -m ruff check .
 if errorlevel 1 goto failed
 ".venv\Scripts\python.exe" -m ruff format --check .
 if errorlevel 1 goto failed
 ".venv\Scripts\python.exe" -m pytest
 if errorlevel 1 goto failed
-git fetch origin --prune
-if errorlevel 1 goto failed
-git merge-base --is-ancestor origin/main HEAD
-if errorlevel 1 (
-    echo Main ma nowe zmiany lub nie mozna go sprawdzic. Najpierw przeanalizuj i scal origin/main.
-    goto failed
-)
 call :check_branch
 if errorlevel 1 goto failed
 git status --short --branch

@@ -1,0 +1,102 @@
+{% extends "baza.html" %}
+{% block tytul %}Zakwaterowanie – {{ d.id_delegacji }}{% endblock %}
+{% block tresc %}
+<p><a href="/app/wnioski/{{ d.id_delegacji }}">← Wniosek {{ d.id_delegacji }}</a></p>
+
+<div class="naglowek-strony">
+  <h2>Zakwaterowanie</h2>
+  <span class="status duzy {{ d.status | klasa_statusu }}">{{ d.status }}</span>
+</div>
+
+{% if komunikat %}
+<p class="{{ 'bledy' if blad else 'komunikat' }}" role="{{ 'alert' if blad else 'status' }}">{{ komunikat }}</p>
+{% endif %}
+
+{# S22IT1S0P2-99: obiekty w limicie noclegowym z kosztem i czasem dojazdu; warianty z odstępstwem osobno (2a) #}
+{% macro wiersze(lista) %}
+  {% for z in lista %}
+  {% set o = obiekty.get(z.id_obiektu) %}
+  <tr>
+    <td>
+      <label>
+        <input type="radio" name="id_zakwaterowania" value="{{ z.id_zakwaterowania }}" required
+               {% if zaznaczony == z.id_zakwaterowania %}checked{% endif %}>
+        <strong>{{ o.nazwa if o else z.id_obiektu }}</strong>
+      </label>
+      {% if o %}<br><small>{{ o.rodzaj }} · {{ o.miejscowosc }}</small>{% endif %}
+    </td>
+    <td class="bez-lamania">{{ z.data_od.strftime('%d.%m') }}–{{ z.data_do.strftime('%d.%m.%Y') }}</td>
+    <td class="bez-lamania">{% if z.czas_dojazdu_min is not none %}{{ z.czas_dojazdu_min }} min{% else %}–{% endif %}</td>
+    <td class="bez-lamania">{{ z.cena_za_dobe | kwota }}</td>
+    <td class="bez-lamania"><strong>{{ z.koszt_calkowity | kwota }}</strong></td>
+  </tr>
+  {% endfor %}
+{% endmacro %}
+{% macro tabela(lista) %}
+<div class="overflow-auto">
+  <table>
+    <thead>
+      <tr>
+        <th scope="col">Obiekt</th>
+        <th scope="col">Pobyt</th>
+        <th scope="col">Dojazd na zadanie</th>
+        <th scope="col">Cena za dobę</th>
+        <th scope="col">Koszt</th>
+      </tr>
+    </thead>
+    <tbody>{{ wiersze(lista) }}</tbody>
+  </table>
+</div>
+{% endmacro %}
+
+{% if not d.potrzeba_zakwaterowania %}
+<article><p>We wniosku nie zgłoszono potrzeby zakwaterowania.</p></article>
+{% elif wybrane %}
+{% set o = obiekty.get(wybrane.id_obiektu) %}
+<article>
+  <header><strong>Zarezerwowano zakwaterowanie</strong></header>
+  <p>
+    <strong>{{ o.nazwa if o else wybrane.id_obiektu }}</strong>{% if o %}, {{ o.miejscowosc }}{% endif %}<br>
+    {{ wybrane.data_od.strftime('%d.%m.%Y') }} – {{ wybrane.data_do.strftime('%d.%m.%Y') }},
+    koszt {{ wybrane.koszt_calkowity | kwota }}
+    {% if wybrane.czas_dojazdu_min is not none %}, dojazd na miejsce zadania {{ wybrane.czas_dojazdu_min }} min{% endif %}
+  </p>
+  {% if wybrane.uzasadnienie %}<p><small>Uzasadnienie wyboru: {{ wybrane.uzasadnienie }}</small></p>{% endif %}
+</article>
+{% elif oczekuje %}
+{% set o = obiekty.get(oczekuje.id_obiektu) %}
+<p class="komunikat ostrzezenie" role="status">
+  Wybrano <strong>{{ o.nazwa if o else oczekuje.id_obiektu }}</strong> – wariant wymaga odstępstwa od limitu
+  i czeka na decyzję przełożonego.
+</p>
+{% elif not w_limicie and not z_odstepstwem %}
+<article>
+  <p>System dobiera obiekty zakwaterowania. Wróć tu za chwilę – pojawią się propozycje z kosztem i czasem dojazdu.</p>
+</article>
+{% else %}
+<form method="post" action="/app/wnioski/{{ d.id_delegacji }}/zakwaterowanie">
+  {% if w_limicie %}
+  <fieldset>
+    <legend><strong>Obiekty w limicie noclegowym</strong></legend>
+    {{ tabela(w_limicie) }}
+  </fieldset>
+  {% else %}
+  <p class="komunikat ostrzezenie" role="status">
+    Żaden obiekt w limicie noclegowym nie zapewnia terminowego dojazdu na miejsce zadania.
+  </p>
+  {% endif %}
+
+  {% if z_odstepstwem %}
+  <fieldset>
+    <legend><strong>Warianty wymagające odstępstwa</strong> <small>– wybór trafi do przełożonego do decyzji</small></legend>
+    {{ tabela(z_odstepstwem) }}
+  </fieldset>
+  {% endif %}
+
+  <label for="uzasadnienie">Uzasadnienie wyboru <small>(wymagane dla wariantu z odstępstwem)</small>
+    <textarea id="uzasadnienie" name="uzasadnienie" rows="2" maxlength="500">{{ uzasadnienie or '' }}</textarea>
+  </label>
+  <button type="submit">Zarezerwuj</button>
+</form>
+{% endif %}
+{% endblock %}

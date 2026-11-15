@@ -24,14 +24,17 @@ function Assert-WorkBranch {
 }
 
 Assert-WorkBranch
-Invoke-Checked ".\.venv\Scripts\python.exe" @("-m", "ruff", "check", ".")
-Invoke-Checked ".\.venv\Scripts\python.exe" @("-m", "ruff", "format", "--check", ".")
-Invoke-Checked ".\.venv\Scripts\python.exe" @("-m", "pytest")
 Invoke-Checked "git" @("fetch", "origin", "--prune")
 & git merge-base --is-ancestor origin/main HEAD
+if ($LASTEXITCODE -gt 1) {
+    throw "Nie mozna sprawdzic aktualnosci main. Publikacja przerwana."
+}
 if ($LASTEXITCODE -ne 0) {
     throw "Main ma nowe zmiany lub nie mozna go sprawdzic. Najpierw przeanalizuj i scal origin/main."
 }
+Invoke-Checked ".\.venv\Scripts\python.exe" @("-m", "ruff", "check", ".")
+Invoke-Checked ".\.venv\Scripts\python.exe" @("-m", "ruff", "format", "--check", ".")
+Invoke-Checked ".\.venv\Scripts\python.exe" @("-m", "pytest")
 Assert-WorkBranch
 Invoke-Checked "git" @("status", "--short", "--branch")
 Invoke-Checked "git" @("push", "-u", "origin", $expectedBranch)

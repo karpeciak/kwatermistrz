@@ -1,0 +1,105 @@
+{% extends "baza.html" %}
+{% block tytul %}Przejazd – {{ d.id_delegacji }}{% endblock %}
+{% block tresc %}
+<p><a href="/app/wnioski/{{ d.id_delegacji }}">← Wniosek {{ d.id_delegacji }}</a></p>
+
+<div class="naglowek-strony">
+  <h2>Wybór przejazdu</h2>
+  <span class="status duzy {{ d.status | klasa_statusu }}">{{ d.status }}</span>
+</div>
+
+{% if komunikat %}
+<p class="{{ 'bledy' if blad else 'komunikat' }}" role="{{ 'alert' if blad else 'status' }}">{{ komunikat }}</p>
+{% endif %}
+
+{# S22IT1S0P2-45: porównanie wariantów podróży – czas, koszt, przesiadki, punktualność; rekomendacja systemu #}
+{% macro opis_wariantu(p) -%}
+  {%- set pol = polaczenia.get(p.id_polaczenia) if p.id_polaczenia else none -%}
+  <strong>{{ p.srodek_transportu }}</strong>{% if p.numer_kursu %} {{ p.numer_kursu }}{% endif %}
+  {%- if pol %}<br><small>{{ pol.przewoznik }} · {{ pol.skad }} → {{ pol.dokad }}</small>{% endif %}
+{%- endmacro %}
+
+{% if wybrane %}
+<article>
+  <header><strong>Wybrany przejazd</strong></header>
+  <ul>
+    {% for p in wybrane %}
+    <li>{{ p.kierunek }}, {{ p.data_przejazdu.strftime('%d.%m.%Y') }}: {{ opis_wariantu(p) }}{% if p.koszt is not none %} – {{ p.koszt | kwota }}{% endif %}</li>
+    {% endfor %}
+  </ul>
+</article>
+{% elif do_uzgodnienia %}
+<p class="komunikat ostrzezenie" role="status">
+  Zaproponowane warianty zostały odrzucone – przejazd zostanie uzgodniony indywidualnie.
+</p>
+{% elif not warianty %}
+<article>
+  <p>System przygotowuje warianty przejazdu. Wróć tu za chwilę – pojawią się porównane trasy z rekomendacją.</p>
+</article>
+{% else %}
+<form method="post" action="/app/wnioski/{{ d.id_delegacji }}/przejazd">
+  {% for kierunek, lista in warianty.items() %}
+  {% set nr = loop.index %}
+  <fieldset>
+    <legend><strong>{{ kierunek }}</strong> – {{ lista[0].data_przejazdu.strftime('%d.%m.%Y') }}</legend>
+    <div class="overflow-auto">
+      <table>
+        <thead>
+          <tr>
+            <th scope="col">Wariant</th>
+            <th scope="col">Odjazd – przyjazd</th>
+            <th scope="col">Czas</th>
+            <th scope="col">Przesiadki</th>
+            <th scope="col">Punktualność</th>
+            <th scope="col">Koszt</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for p in lista %}
+          {% set pol = polaczenia.get(p.id_polaczenia) if p.id_polaczenia else none %}
+          {% set zaznacz = (p.id_przejazdu in zaznaczone) if zaznaczone else p.id_przejazdu in rekomendowane %}
+          <tr>
+            <td>
+              <label>
+                <input type="radio" name="wybor_{{ nr }}" value="{{ p.id_przejazdu }}" required {% if zaznacz %}checked{% endif %}>
+                {{ opis_wariantu(p) }}
+              </label>
+              {% if p.id_przejazdu in rekomendowane %}
+              <mark>rekomendowany</mark>
+              {% if p.uzasadnienie %}<br><small>{{ p.uzasadnienie }}</small>{% endif %}
+              {% endif %}
+            </td>
+            <td class="bez-lamania">{% if pol %}{{ pol.godzina_odjazdu.strftime('%H:%M') }} – {{ pol.godzina_przyjazdu.strftime('%H:%M') }}{% else %}–{% endif %}</td>
+            <td class="bez-lamania">{% if pol %}{{ pol.czas_min // 60 }} h {{ pol.czas_min % 60 }} min{% else %}–{% endif %}</td>
+            <td>{% if pol %}{{ pol.liczba_przesiadek }}{% else %}–{% endif %}</td>
+            <td>{% if pol %}{{ (pol.punktualnosc * 100) | round | int }}%{% else %}–{% endif %}</td>
+            <td class="bez-lamania">{% if p.koszt is not none %}{{ p.koszt | kwota }}{% else %}–{% endif %}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </fieldset>
+  {% endfor %}
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  {% if d.srodek_transportu %}<label><input type="checkbox" name="zgoda_na_zmiane_transportu" value="true">
+    Akceptuję zmianę wnioskowanego środka transportu, jeśli wybieram inny wariant.</label>{% endif %}
+  <label for="uzasadnienie">Przyczyna wyboru <small>(wymagana, gdy wybierasz wariant inny niż rekomendowany)</small>
+    <textarea id="uzasadnienie" name="uzasadnienie" rows="2" maxlength="500">{{ uzasadnienie or '' }}</textarea>
+  </label>
+  <button type="submit">Wybierz przejazd</button>
+</form>
+
+{# Scenariusz 6a: żaden wariant nie odpowiada delegowanemu #}
+<details>
+  <summary>Żaden wariant mi nie odpowiada</summary>
+  <form method="post" action="/app/wnioski/{{ d.id_delegacji }}/przejazd/odrzucenie">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <label for="przyczyna">Przyczyna odrzucenia *
+      <textarea id="przyczyna" name="przyczyna" rows="2" maxlength="500" required></textarea>
+    </label>
+    <button type="submit" class="secondary">Odrzuć wszystkie warianty</button>
+  </form>
+</details>
+{% endif %}
+{% endblock %}

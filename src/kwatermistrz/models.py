@@ -57,6 +57,8 @@ class Jednostka(Base):
     budzet_delegacji: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=0)
     # Kwota zaangażowana w zatwierdzone delegacje – dostępny budżet dla S22IT1S0P2-35
     budzet_wykorzystany: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=0, server_default="0")
+    # Kwota wydatkowana – należności z zatwierdzonych rozliczeń (S22IT1S0P2-36, podzadanie 66)
+    budzet_wydatkowany: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=0, server_default="0")
 
 
 class Zolnierz(Base):
