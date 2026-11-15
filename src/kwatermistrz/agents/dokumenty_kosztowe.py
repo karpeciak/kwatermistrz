@@ -10,14 +10,14 @@ from sqlalchemy.orm import Session
 from ..models import DokumentKosztowy
 
 
-def klucz_dokumentu(rodzaj: str, numer: str, data: date, kwota: Decimal) -> str:
-    """Buduje stabilny, globalny klucz z rodzaju, numeru, daty i kwoty dokumentu."""
+def klucz_dokumentu(numer: str, data: date, kwota: Decimal) -> str:
+    """Buduje stabilny, globalny klucz z numeru, daty i kwoty dokumentu."""
 
     def tekst(wartosc: str) -> str:
         return " ".join(normalize("NFKC", wartosc).split()).casefold()
 
     kwota_do_grosza = kwota.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-    return f"{tekst(rodzaj)}|{tekst(numer)}|{data.isoformat()}|{kwota_do_grosza:.2f}"
+    return f"{tekst(numer)}|{data.isoformat()}|{kwota_do_grosza:.2f}"
 
 
 def znajdz_duplikat(s: Session, klucz: str) -> DokumentKosztowy | None:

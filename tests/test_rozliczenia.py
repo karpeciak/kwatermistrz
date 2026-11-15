@@ -87,15 +87,55 @@ def test_ten_sam_dokument_jest_odrzucony_w_innym_rozliczeniu_i_odrzucenie_jest_l
 def test_roznice_w_wielkosci_liter_spacjach_i_formacie_kwoty_nie_omijaja_blokady(klient):
     delegacja_do_rozliczenia("DEL-R-4")
     delegacja_do_rozliczenia("DEL-R-5", "ZOL-004")
-    pierwszy = dokument(rodzaj="  Bilet   kolejowy ", numer=" IC   12345 ", kwota="123.4")
-    wariant = dokument(rodzaj="bilet kolejowy", numer="ic 12345", kwota="123.40")
+    pierwszy = dokument(rodzaj="Bilet", numer=" IC   12345 ", kwota="123.4")
+    wariant = dokument(rodzaj="Bilet", numer="ic 12345", kwota="123.40")
     assert klient.post("/delegacje/DEL-R-4/rozliczenie/dokumenty", json=pierwszy).status_code == 201
 
     odpowiedz = klient.post("/delegacje/DEL-R-5/rozliczenie/dokumenty", json=wariant)
 
     assert odpowiedz.status_code == 409
+    assert "numerze, dacie i kwocie" in odpowiedz.json()["komunikat"]
     with sesja() as s:
         assert s.scalar(select(func.count()).select_from(DokumentKosztowy)) == 1
+        assert s.scalar(select(DokumentKosztowy)).klucz_unikalnosci == "ic 12345|2026-11-12|123.40"
+
+
+def test_rozny_rodzaj_nie_pozwala_ponownie_dodac_tego_samego_dokumentu(klient):
+    delegacja_do_rozliczenia("DEL-R-RODZAJ-1")
+    delegacja_do_rozliczenia("DEL-R-RODZAJ-2", "ZOL-004")
+    assert klient.post("/delegacje/DEL-R-RODZAJ-1/rozliczenie/dokumenty", json=dokument()).status_code == 201
+
+    odpowiedz = klient.post(
+        "/delegacje/DEL-R-RODZAJ-2/rozliczenie/dokumenty",
+        json=dokument(rodzaj="Faktura"),
+    )
+
+    assert odpowiedz.status_code == 409
+    with sesja() as s:
+        assert s.scalar(select(func.count()).select_from(DokumentKosztowy)) == 1
+
+
+@pytest.mark.parametrize(
+    "zmiana",
+    [
+        {"numer": "IC 12346"},
+        {"data": "2026-11-13"},
+        {"kwota": "123.41"},
+    ],
+)
+def test_dokumenty_rozniace_sie_numerem_data_lub_kwota_sa_przyjmowane(klient, zmiana):
+    delegacja_do_rozliczenia("DEL-R-ROZNE-1")
+    delegacja_do_rozliczenia("DEL-R-ROZNE-2", "ZOL-004")
+    assert klient.post("/delegacje/DEL-R-ROZNE-1/rozliczenie/dokumenty", json=dokument()).status_code == 201
+
+    odpowiedz = klient.post(
+        "/delegacje/DEL-R-ROZNE-2/rozliczenie/dokumenty",
+        json=dokument(rodzaj="Faktura", **zmiana),
+    )
+
+    assert odpowiedz.status_code == 201
+    with sesja() as s:
+        assert s.scalar(select(func.count()).select_from(DokumentKosztowy)) == 2
 
 
 def test_dokument_mozna_dodac_tylko_do_delegacji_wymagajacej_rozliczenia(klient):
@@ -123,10 +163,14 @@ def test_konflikt_unikalnosci_w_bazie_jest_czytelnym_odrzuceniem(klient, monkeyp
 
     monkeypatch.setattr(api_rozliczenia, "znajdz_duplikat", pomin_pierwsze_wyszukanie)
 
-    odpowiedz = klient.post("/delegacje/DEL-R-8/rozliczenie/dokumenty", json=dokument())
+    odpowiedz = klient.post(
+        "/delegacje/DEL-R-8/rozliczenie/dokumenty",
+        json=dokument(rodzaj="Faktura"),
+    )
 
     assert odpowiedz.status_code == 409
     assert odpowiedz.json()["przyjeto"] is False
     with sesja() as s:
         assert s.scalar(select(func.count()).select_from(DokumentKosztowy)) == 1
-        assert s.scalar(select(func.count()).select_from(LogOperacji).where(LogOperacji.id_delegacji == "DEL-R-8")) == 1
+        wpis = s.scalar(select(LogOperacji).where(LogOperacji.id_delegacji == "DEL-R-8"))
+        assert wpis is not None and wpis.wynik == "Ostrzeżenie"

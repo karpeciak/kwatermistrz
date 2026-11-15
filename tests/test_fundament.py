@@ -4,6 +4,7 @@ import asyncio
 from datetime import timedelta
 from decimal import Decimal
 
+import pytest
 from alembic import command
 from alembic.autogenerate import compare_metadata
 from alembic.config import Config
@@ -71,6 +72,64 @@ def test_migracja_bazy_sprzed_sprintu_1_zachowuje_dane(tmp_path):
         wersja = polaczenie.execute(text("SELECT version_num FROM alembic_version")).scalar()
     assert status == Status.W_AKCEPTACJI
     assert od_kiedy is not None
+    assert wersja == "0004"
+
+
+def konfiguracja_migracji(polaczenie):
+    cfg = Config()
+    cfg.set_main_option("script_location", "src/kwatermistrz/migracje")
+    cfg.attributes["polaczenie"] = polaczenie
+    return cfg
+
+
+def dodaj_stary_dokument(polaczenie, id_dokumentu: int, rodzaj: str, numer: str, klucz: str) -> None:
+    polaczenie.execute(
+        text(
+            "INSERT INTO dokument_kosztowy "
+            "(id_dokumentu, id_rozliczenia, rodzaj, numer, data, kwota, przekracza_limit, "
+            "klucz_unikalnosci, data_przekazania) "
+            "VALUES (:id, 999, :rodzaj, :numer, '2026-11-12', 123.40, 0, :klucz, '2026-11-15 12:00:00')"
+        ),
+        {"id": id_dokumentu, "rodzaj": rodzaj, "numer": numer, "klucz": klucz},
+    )
+
+
+def test_migracja_kluczy_dokumentow_zachowuje_istniejace_rekordy(tmp_path):
+    silnik = create_engine(f"sqlite:///{(tmp_path / 'dokumenty.db').as_posix()}")
+    with silnik.begin() as polaczenie:
+        cfg = konfiguracja_migracji(polaczenie)
+        command.upgrade(cfg, "0003")
+        dodaj_stary_dokument(polaczenie, 1, "Bilet", " IC   12345 ", "bilet|ic 12345|2026-11-12|123.40")
+        dodaj_stary_dokument(polaczenie, 2, "Faktura", "FV/77", "faktura|fv/77|2026-11-12|123.40")
+        command.upgrade(cfg, "head")
+
+    with silnik.connect() as polaczenie:
+        dokumenty = polaczenie.execute(
+            text("SELECT id_dokumentu, klucz_unikalnosci FROM dokument_kosztowy ORDER BY id_dokumentu")
+        ).all()
+    assert dokumenty == [(1, "ic 12345|2026-11-12|123.40"), (2, "fv/77|2026-11-12|123.40")]
+
+
+def test_migracja_kluczy_przerywa_przy_kolizji_i_nie_zmienia_rekordow(tmp_path):
+    silnik = create_engine(f"sqlite:///{(tmp_path / 'kolizja.db').as_posix()}")
+    with silnik.begin() as polaczenie:
+        cfg = konfiguracja_migracji(polaczenie)
+        command.upgrade(cfg, "0003")
+        dodaj_stary_dokument(polaczenie, 1, "Bilet", "IC 12345", "bilet|ic 12345|2026-11-12|123.40")
+        dodaj_stary_dokument(polaczenie, 2, "Faktura", "ic 12345", "faktura|ic 12345|2026-11-12|123.40")
+
+    with pytest.raises(RuntimeError, match="kolizj"):
+        with silnik.begin() as polaczenie:
+            command.upgrade(konfiguracja_migracji(polaczenie), "head")
+
+    with silnik.connect() as polaczenie:
+        dokumenty = (
+            polaczenie.execute(text("SELECT klucz_unikalnosci FROM dokument_kosztowy ORDER BY id_dokumentu"))
+            .scalars()
+            .all()
+        )
+        wersja = polaczenie.execute(text("SELECT version_num FROM alembic_version")).scalar()
+    assert dokumenty == ["bilet|ic 12345|2026-11-12|123.40", "faktura|ic 12345|2026-11-12|123.40"]
     assert wersja == "0003"
 
 

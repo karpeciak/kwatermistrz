@@ -263,7 +263,7 @@ class DokumentKosztowy(Base):
     kwota: Mapped[Decimal] = mapped_column(Numeric(10, 2))
     kwota_uznana: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
     przekracza_limit: Mapped[bool] = mapped_column(Boolean, default=False)
-    # Identyfikacja ponownie przesłanego dokumentu, np. rodzaj|numer|data|kwota (S22IT1S0P2-20)
+    # Identyfikacja ponownie przesłanego dokumentu: numer|data|kwota (S22IT1S0P2-20)
     klucz_unikalnosci: Mapped[str] = mapped_column(String(200), unique=True)
     data_przekazania: Mapped[datetime] = mapped_column(DateTime, default=teraz)
 
