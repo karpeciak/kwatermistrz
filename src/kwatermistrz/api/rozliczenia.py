@@ -14,19 +14,22 @@ Zrobione:
 """
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal
+from typing import Literal
 
-from fastapi import APIRouter, Depends, Response
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from fastapi import APIRouter, Depends, HTTPException, Response
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..agents.dokumenty_kosztowe import klucz_dokumentu, znajdz_duplikat
 from ..audit import zapisz_operacje
-from ..models import Delegacja, DokumentKosztowy, Rozliczenie, Status
-from .zaleznosci import get_sesja, pobierz_delegacje
+from ..messaging import Broker, Komunikat, Typ
+from ..models import Delegacja, DokumentKosztowy, Jednostka, Rozliczenie, Status, StatusRozliczenia, Zolnierz
+from .zaleznosci import get_broker, get_sesja, pobierz_delegacje
+from .zatwierdzenia import koszt_delegacji
 
 router = APIRouter(tags=["Rozliczenie"])
 
@@ -110,6 +113,8 @@ def przyjmij_dokument(s: Session, delegacja: Delegacja, dane: DokumentKosztowyIn
         return WynikPrzyjecia(False, KOMUNIKAT_DUPLIKAT)
 
     rozliczenie = s.scalar(select(Rozliczenie).where(Rozliczenie.id_delegacji == delegacja.id_delegacji))
+    if not mozna_edytowac(rozliczenie):
+        return WynikPrzyjecia(False, KOMUNIKAT_ZATWIERDZONE)
     if rozliczenie is None:
         rozliczenie = Rozliczenie(id_delegacji=delegacja.id_delegacji)
         try:
@@ -168,3 +173,182 @@ def dodaj_dokument_kosztowy(
         komunikat=wynik.komunikat,
         dokument=DokumentKosztowyOut.model_validate(wynik.dokument) if wynik.dokument else None,
     )
+
+
+# ---------------------------------------------------------------- S22IT1S0P2-36: wyliczenie i zatwierdzenie
+
+POLA_WYLICZENIA = ("dieta", "zwrot_przejazdu", "zwrot_noclegu", "ryczalty", "kwota_naleznosci")
+KOMUNIKAT_ZATWIERDZONE = "Rozliczenie zostało już zatwierdzone – nie można go zmieniać."
+
+
+def rozliczenie_delegacji(s: Session, d: Delegacja) -> Rozliczenie | None:
+    return s.scalar(select(Rozliczenie).where(Rozliczenie.id_delegacji == d.id_delegacji))
+
+
+def mozna_edytowac(rozliczenie: Rozliczenie | None) -> bool:
+    """Dane rozliczenia zmienia się tylko przed zatwierdzeniem wyliczenia przez delegowanego."""
+    return rozliczenie is None or rozliczenie.status == StatusRozliczenia.W_PRZYGOTOWANIU
+
+
+def zapisz_podroz(
+    s: Session,
+    d: Delegacja,
+    wyjazd: datetime,
+    powrot: datetime,
+    posilki: dict[str, int],
+    bezplatne_zakwaterowanie: bool,
+) -> Rozliczenie:
+    """Faktyczny czas podróży i zapewnione świadczenia przekazane przez delegowanego."""
+    rozliczenie = rozliczenie_delegacji(s, d)
+    if rozliczenie is None:
+        rozliczenie = Rozliczenie(id_delegacji=d.id_delegacji)
+        s.add(rozliczenie)
+    rozliczenie.faktyczny_wyjazd = wyjazd
+    rozliczenie.faktyczny_powrot = powrot
+    rozliczenie.zapewnione_posilki = {posilek: liczba for posilek, liczba in posilki.items() if liczba}
+    rozliczenie.bezplatne_zakwaterowanie = bezplatne_zakwaterowanie
+    s.flush()
+    return rozliczenie
+
+
+async def zlec_wyliczenie(s: Session, broker: Broker, d: Delegacja) -> None:
+    """Unieważnia poprzednie wyliczenie i zleca nowe Agentowi Rozliczeń, gdy znany jest czas podróży."""
+    rozliczenie = rozliczenie_delegacji(s, d)
+    if rozliczenie is None:
+        return
+    for pole in POLA_WYLICZENIA:
+        setattr(rozliczenie, pole, None)
+    s.commit()
+    if rozliczenie.faktyczny_wyjazd and rozliczenie.faktyczny_powrot:
+        await broker.publikuj(Komunikat(typ=Typ.ZADANIE_ROZLICZENIA, id_delegacji=d.id_delegacji))
+
+
+async def zatwierdz_wyliczenie(s: Session, broker: Broker, d: Delegacja) -> str | None:
+    """Delegowany zatwierdza wyliczenie → gotowe do weryfikacji; zwraca opis błędu albo None.
+
+    S22IT1S0P2-66: szacowany koszt przestaje być zaangażowany w budżecie jednostki, a należność staje się wydatkiem.
+    """
+    rozliczenie = rozliczenie_delegacji(s, d)
+    if rozliczenie is None or rozliczenie.kwota_naleznosci is None:
+        return "Nie ma jeszcze wyliczenia należności do zatwierdzenia."
+    if rozliczenie.status != StatusRozliczenia.W_PRZYGOTOWANIU:
+        return "Wyliczenie zostało już zatwierdzone."
+    rozliczenie.status = StatusRozliczenia.GOTOWE_DO_WERYFIKACJI
+    kwota = rozliczenie.kwota_naleznosci
+    opis = f"Delegowany zatwierdził wyliczenie: {kwota:.2f} zł – gotowe do weryfikacji"
+
+    wnioskodawca = s.get(Zolnierz, d.id_zolnierza)
+    jednostka = s.get(Jednostka, wnioskodawca.id_jednostki) if wnioskodawca else None
+    if jednostka is not None:
+        zaangazowane = koszt_delegacji(d) or Decimal("0")
+        jednostka.budzet_wykorzystany = max(Decimal("0"), (jednostka.budzet_wykorzystany or 0) - zaangazowane)
+        jednostka.budzet_wydatkowany = (jednostka.budzet_wydatkowany or 0) + kwota
+        opis += f"; budżet: zaangażowanie −{zaangazowane:.2f} zł, wydatek +{kwota:.2f} zł"
+
+    zapisz_operacje(
+        s,
+        id_korelacji=f"COR-{d.id_delegacji}",
+        id_delegacji=d.id_delegacji,
+        id_agenta="AG-06",
+        etap=Status.DO_ROZLICZENIA,
+        operacja="Zatwierdzenie wyliczenia przez delegowanego",
+        wynik="Sukces",
+        czas_trwania_ms=0,
+        nr_proby=1,
+        komunikat=opis,
+        id_komunikatu=None,
+    )
+    s.commit()
+    await broker.publikuj(
+        Komunikat(typ=Typ.WYNIK_ROZLICZENIA, id_delegacji=d.id_delegacji, dane={"kwota_naleznosci": str(kwota)})
+    )
+    return None
+
+
+class PodrozIn(BaseModel):
+    faktyczny_wyjazd: datetime
+    faktyczny_powrot: datetime
+    zapewnione_posilki: dict[Literal["śniadanie", "obiad", "kolacja"], int] = Field(default_factory=dict)
+    bezplatne_zakwaterowanie: bool = False
+
+    @model_validator(mode="after")
+    def sprawdz(self) -> "PodrozIn":
+        if self.faktyczny_powrot <= self.faktyczny_wyjazd:
+            raise ValueError("powrót musi nastąpić po wyjeździe")
+        if any(liczba < 0 for liczba in self.zapewnione_posilki.values()):
+            raise ValueError("liczba posiłków nie może być ujemna")
+        return self
+
+
+def delegacja_do_rozliczenia(s: Session, id_delegacji: str) -> Delegacja:
+    d = pobierz_delegacje(s, id_delegacji)
+    if d.status != Status.DO_ROZLICZENIA:
+        raise HTTPException(409, "Delegacja nie kwalifikuje się do rozliczenia")
+    return d
+
+
+@router.post("/delegacje/{id_delegacji}/rozliczenie", status_code=202)
+async def przekaz_dane_rozliczenia(
+    id_delegacji: str,
+    dane: PodrozIn,
+    s: Session = Depends(get_sesja),
+    broker: Broker = Depends(get_broker),
+):
+    """Faktyczny czas podróży i zapewnione świadczenia → wyliczenie należności przez Agenta Rozliczeń."""
+    d = delegacja_do_rozliczenia(s, id_delegacji)
+    if not mozna_edytowac(rozliczenie_delegacji(s, d)):
+        raise HTTPException(409, KOMUNIKAT_ZATWIERDZONE)
+    posilki = dict(dane.zapewnione_posilki)
+    zapisz_podroz(s, d, dane.faktyczny_wyjazd, dane.faktyczny_powrot, posilki, dane.bezplatne_zakwaterowanie)
+    await zlec_wyliczenie(s, broker, d)
+    return {"przyjeto": True}
+
+
+@router.get("/delegacje/{id_delegacji}/rozliczenie")
+def zestawienie_rozliczenia(id_delegacji: str, s: Session = Depends(get_sesja)):
+    """Zestawienie składników rozliczenia z kwotą należności i oznaczeniem przekroczeń limitu."""
+    d = pobierz_delegacje(s, id_delegacji)
+    rozliczenie = rozliczenie_delegacji(s, d)
+    if rozliczenie is None:
+        raise HTTPException(404, "Ta delegacja nie ma jeszcze rozliczenia")
+    dokumenty = s.scalars(
+        select(DokumentKosztowy)
+        .where(DokumentKosztowy.id_rozliczenia == rozliczenie.id_rozliczenia)
+        .order_by(DokumentKosztowy.id_dokumentu)
+    ).all()
+    return {
+        "id_delegacji": d.id_delegacji,
+        "status": rozliczenie.status,
+        "faktyczny_wyjazd": rozliczenie.faktyczny_wyjazd,
+        "faktyczny_powrot": rozliczenie.faktyczny_powrot,
+        "zapewnione_posilki": rozliczenie.zapewnione_posilki or {},
+        "bezplatne_zakwaterowanie": rozliczenie.bezplatne_zakwaterowanie,
+        "dokumenty": [
+            {
+                "rodzaj": dok.rodzaj,
+                "numer": dok.numer,
+                "data": dok.data,
+                "kwota": dok.kwota,
+                "kwota_uznana": dok.kwota_uznana,
+                "przekracza_limit": dok.przekracza_limit,
+            }
+            for dok in dokumenty
+        ],
+        "wyliczenie": None
+        if rozliczenie.kwota_naleznosci is None
+        else {pole: getattr(rozliczenie, pole) for pole in POLA_WYLICZENIA},
+    }
+
+
+@router.post("/delegacje/{id_delegacji}/rozliczenie/zatwierdzenie")
+async def zatwierdz_wyliczenie_api(
+    id_delegacji: str,
+    s: Session = Depends(get_sesja),
+    broker: Broker = Depends(get_broker),
+):
+    """Delegowany zatwierdza wyliczenie – rozliczenie trafia do weryfikacji (S22IT1S0P2-43)."""
+    d = delegacja_do_rozliczenia(s, id_delegacji)
+    komunikat = await zatwierdz_wyliczenie(s, broker, d)
+    if komunikat:
+        raise HTTPException(409, komunikat)
+    return {"status": StatusRozliczenia.GOTOWE_DO_WERYFIKACJI}

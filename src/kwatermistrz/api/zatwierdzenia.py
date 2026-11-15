@@ -80,7 +80,9 @@ def budzet_jednostki(s: Session, przelozony: Zolnierz) -> Budzet | None:
     j = s.get(Jednostka, przelozony.id_jednostki)
     if j is None:
         return None
-    return Budzet(przyznany=j.budzet_delegacji or Decimal("0"), wykorzystany=j.budzet_wykorzystany or Decimal("0"))
+    # wykorzystany = zaangażowany w zatwierdzone delegacje + wydatkowany z rozliczeń (S22IT1S0P2-66)
+    wykorzystany = (j.budzet_wykorzystany or Decimal("0")) + (j.budzet_wydatkowany or Decimal("0"))
+    return Budzet(przyznany=j.budzet_delegacji or Decimal("0"), wykorzystany=wykorzystany)
 
 
 def oczekujace_na_decyzje(s: Session, id_przelozonego: str) -> list[Delegacja]:
