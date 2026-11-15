@@ -37,6 +37,10 @@ class AgentWnioskow(Agent):
             d.data_wyjazdu = parsuj_date(w["data_wyjazdu"])
             d.data_powrotu = d.pierwotna_data_powrotu = parsuj_date(w["data_powrotu"])
             d.srodek_transportu = w.get("srodek_transportu")
+            # S22IT1S0P2-33: podstawa wyjazdu w polach delegacji (polecenie wyjazdu, wyszukiwanie)
+            d.podstawa_numer_rozkazu = str(w.get("podstawa_numer_rozkazu") or "").strip() or None
+            data_rozkazu = w.get("podstawa_data_rozkazu")
+            d.podstawa_data_rozkazu = parsuj_date(str(data_rozkazu)) if data_rozkazu else None
             # S22IT1S0P2-35: przewidywany koszt – przełożony porównuje go z budżetem jednostki
             d.szacowany_koszt = szacuj_koszt(d.data_wyjazdu, d.data_powrotu, d.potrzeba_zakwaterowania)
         else:

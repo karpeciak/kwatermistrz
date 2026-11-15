@@ -558,7 +558,7 @@ def podsumowanie_wniosku(
         "dane_transportu": dane_pojazdu(srodek_transportu, nr_rejestracyjny, pojemnosc_silnika),
     }
     jednostka = s.get(Jednostka, uzytkownik.id_jednostki)
-    bledy = [] if popraw else waliduj_wniosek(w, jednostka=uzytkownik.id_jednostki)
+    bledy = [] if popraw else waliduj_wniosek(w, jednostka=uzytkownik.id_jednostki, wymagaj_podstawy=True)
     etap = etap_przygotowania(w) if popraw or bledy else "podsumowanie"
     zapisz_wersje_robocza(s, uzytkownik.id_zolnierza, w, etap)  # S22IT1S0P2-37
     if popraw or bledy:

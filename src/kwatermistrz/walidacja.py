@@ -35,7 +35,7 @@ def _pusty(wartosc) -> bool:
     return wartosc is None or not str(wartosc).strip()
 
 
-def waliduj_wniosek(wniosek: dict, jednostka: str | None) -> list[BladWalidacji]:
+def waliduj_wniosek(wniosek: dict, jednostka: str | None, wymagaj_podstawy: bool = False) -> list[BladWalidacji]:
     bledy: list[BladWalidacji] = []
 
     if _pusty(wniosek.get("cel_wyjazdu")):
@@ -62,6 +62,31 @@ def waliduj_wniosek(wniosek: dict, jednostka: str | None) -> list[BladWalidacji]
     if len(daty) == 2 and daty["data_powrotu"] < daty["data_wyjazdu"]:
         bledy.append(
             BladWalidacji("data_powrotu", "Data powrotu nie może być wcześniejsza niż data wyjazdu", "S22IT1S0P2-8")
+        )
+
+    # S22IT1S0P2-33: podstawa wyjazdu – rozkaz wydany najpóźniej w dniu wyjazdu. Formularz wymaga numeru
+    # i daty (wymagaj_podstawy=True); Agent Wniosków sprawdza tylko podaną datę rozkazu.
+    if wymagaj_podstawy and _pusty(wniosek.get("podstawa_numer_rozkazu")):
+        bledy.append(
+            BladWalidacji("podstawa_numer_rozkazu", "Uzupełnij numer rozkazu – podstawę wyjazdu", "S22IT1S0P2-33")
+        )
+    tekst = wniosek.get("podstawa_data_rozkazu")
+    if _pusty(tekst):
+        if wymagaj_podstawy:
+            bledy.append(BladWalidacji("podstawa_data_rozkazu", "Uzupełnij datę rozkazu", "S22IT1S0P2-33"))
+    elif (data_rozkazu := parsuj_date(str(tekst))) is None:
+        bledy.append(
+            BladWalidacji(
+                "podstawa_data_rozkazu",
+                "Nieprawidłowy format daty rozkazu – użyj RRRR-MM-DD lub DD.MM.RRRR",
+                "S22IT1S0P2-33",
+            )
+        )
+    elif "data_wyjazdu" in daty and data_rozkazu > daty["data_wyjazdu"]:
+        bledy.append(
+            BladWalidacji(
+                "podstawa_data_rozkazu", "Data rozkazu nie może być późniejsza niż data wyjazdu", "S22IT1S0P2-33"
+            )
         )
 
     srodek = (wniosek.get("srodek_transportu") or "").strip().lower()
