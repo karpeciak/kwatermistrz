@@ -10,4 +10,17 @@
 </p>
 {% endif %}
 {% include "_stan_wniosku.html" %}
+{# S22IT1S0P2-45, -99: organizacja wyjazdu po zatwierdzeniu – wybór przejazdu i zakwaterowania #}
+{% if d.status in ("zatwierdzony", "zorganizowany") and uzytkownik.id_zolnierza == d.id_zolnierza %}
+<article>
+  <header><strong>Organizacja wyjazdu</strong></header>
+  <p>Wybierz przejazd{% if d.potrzeba_zakwaterowania %} i zakwaterowanie{% endif %} spośród propozycji przygotowanych przez system.</p>
+  <div class="przyciski-formularza">
+    <a role="button" href="/app/wnioski/{{ d.id_delegacji }}/przejazd">Przejazd</a>
+    {% if d.potrzeba_zakwaterowania %}
+    <a role="button" class="secondary" href="/app/wnioski/{{ d.id_delegacji }}/zakwaterowanie">Zakwaterowanie</a>
+    {% endif %}
+  </div>
+</article>
+{% endif %}
 {% endblock %}
