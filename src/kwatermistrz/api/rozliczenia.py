@@ -45,8 +45,7 @@ router = APIRouter(tags=["Rozliczenie"])
 
 KOMUNIKAT_PRZYJETY = "Dokument kosztowy został przyjęty i przypisany do bieżącego rozliczenia."
 KOMUNIKAT_DUPLIKAT = (
-    "Dokument kosztowy został odrzucony, ponieważ dokument o takim rodzaju, numerze, dacie i kwocie "
-    "jest już zarejestrowany."
+    "Dokument kosztowy został odrzucony, ponieważ dokument o takim numerze, dacie i kwocie jest już zarejestrowany."
 )
 KOMUNIKAT_LOG_DUPLIKAT = "Odrzucono duplikat dokumentu kosztowego; dokument jest już zarejestrowany."
 
@@ -112,7 +111,7 @@ def przyjmij_dokument(s: Session, delegacja: Delegacja, dane: DokumentKosztowyIn
         return WynikPrzyjecia(False, "Delegacja nie kwalifikuje się do rozliczenia.")
 
     kwota = dane.kwota.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-    klucz = klucz_dokumentu(dane.rodzaj, dane.numer, dane.data, kwota)
+    klucz = klucz_dokumentu(dane.numer, dane.data, kwota)
     if znajdz_duplikat(s, klucz) is not None:
         _zapisz_operacje_dokumentu(
             s,
