@@ -1,0 +1,32 @@
+{% if moze_wybrac and not rozstrzygniete %}
+<details id="dodaj-oferte" class="panel-dodatkowy" {% if blad and "przewoznik" in dane_oferty %}open{% endif %}>
+  <summary><strong>Dodaj sprawdzoną ofertę przejazdu</strong></summary>
+  <p>Oferta dotyczy tylko tego wniosku i wskazanej daty. Wprowadź dane z rozkładu,
+    oferty przewoźnika albo potwierdzonego planu transportu.</p>
+  <form method="post" action="/app/wnioski/{{ d.id_delegacji }}/podroz/warianty">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <input type="hidden" name="klucz" value="{{ dane_oferty.get('klucz', '') }}">
+    <div class="grid">
+      <label>Kierunek<select name="kierunek" required>
+        {% for k in ["Tam", "Powrót"] %}<option value="{{ k }}" {% if dane_oferty.get('kierunek') == k %}selected{% endif %}>{{ k }} — {{ d.data_wyjazdu if k == "Tam" else d.data_powrotu }}</option>{% endfor %}
+      </select></label>
+      <label>Środek transportu<select name="srodek_transportu" required>
+        {% for t, opis in srodki_transportu.items() %}<option value="{{ t }}" {% if dane_oferty.get('srodek_transportu', preferowany_transport) == t %}selected{% endif %}>{{ opis }}</option>{% endfor %}
+      </select></label>
+    </div>
+    <label>Przewoźnik lub organizator<input name="przewoznik" maxlength="100" required value="{{ dane_oferty.get('przewoznik', '') }}"></label>
+    <div class="grid">
+      <label>Godzina odjazdu<input type="time" name="godzina_odjazdu" required value="{{ dane_oferty.get('godzina_odjazdu', '') }}"></label>
+      <label>Czas przejazdu w minutach<input type="number" name="czas_min" min="1" max="2880" required value="{{ dane_oferty.get('czas_min', '') }}"></label>
+      <label>Koszt jednej osoby w zł<input type="number" name="koszt" min="0" step="0.01" required value="{{ dane_oferty.get('koszt', '') }}"></label>
+    </div>
+    <div class="grid">
+      <label>Liczba przesiadek<input type="number" name="liczba_przesiadek" min="0" max="20" required value="{{ dane_oferty.get('liczba_przesiadek', '') }}"></label>
+      <label>Punktualność w % według źródła<input type="number" name="punktualnosc" min="0" max="100" step="0.01" required value="{{ dane_oferty.get('punktualnosc', '') }}"></label>
+      <label>Ocena bezpieczeństwa organizatora (1–5)<input type="number" name="ocena_bezpieczenstwa" min="1" max="5" required value="{{ dane_oferty.get('ocena_bezpieczenstwa', '') }}"></label>
+    </div>
+    <label>Źródło i podstawa oceny<textarea name="zrodlo" minlength="3" maxlength="1000" required placeholder="Adres oferty, numer kursu lub plan transportu; podstawa punktualności i oceny bezpieczeństwa">{{ dane_oferty.get('zrodlo', '') }}</textarea></label>
+    <button type="submit">Dodaj ofertę do porównania</button>
+  </form>
+</details>
+{% endif %}

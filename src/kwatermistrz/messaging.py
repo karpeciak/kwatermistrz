@@ -30,6 +30,7 @@ class Typ:
     WYNIK_POLECENIA = "wynik.polecenie"
     ZADANIE_TRANSPORTU = "zadanie.transport"
     WYBOR_TRANSPORTU = "wybor.transport"
+    PROPOZYCJA_TRANSPORTU = "decyzja.propozycja_transportu"
     WYNIK_TRANSPORTU = "wynik.transport"
     ZADANIE_ZAKWATEROWANIA = "zadanie.zakwaterowanie"
     WYBOR_ZAKWATEROWANIA = "wybor.zakwaterowanie"

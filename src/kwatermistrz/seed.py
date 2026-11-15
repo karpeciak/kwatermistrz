@@ -5,7 +5,7 @@ z tego pliku (to źródło prawdy dla danych słownikowych). Nie dotyka danych p
 ani pól zmienianych przez system (np. `Jednostka.budzet_wykorzystany`).
 """
 
-from datetime import date, time
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 
 from sqlalchemy.orm import Session
@@ -227,6 +227,21 @@ POLACZENIA = [
     _polaczenie("POL-07", "Zegrze", "pojazd służbowy", "JW 1001", (7, 0), (7, 50), 50, 0, "45.00", 0.95, 4),
     _polaczenie("POL-08", "Kraków", "kolej", "PKP Intercity (EIP)", (5, 50), (8, 10), 140, 0, "169.00", 0.94, 5),
     _polaczenie("POL-09", "Kraków", "kolej", "PKP Intercity (IC)", (6, 5), (9, 10), 185, 0, "99.00", 0.88, 5),
+]
+
+
+# Fikcyjne kursy powrotne do demonstracji - to osobne oferty, nie rezerwacja biletu powrotnego.
+POLACZENIA += [
+    {
+        **p,
+        "id_polaczenia": p["id_polaczenia"] + "-P",
+        "skad": p["dokad"],
+        "dokad": p["skad"],
+        "przewoznik": p["przewoznik"] + " (przykładowy powrót)",
+        "godzina_odjazdu": time(17),
+        "godzina_przyjazdu": (datetime(2026, 1, 1, 17) + timedelta(minutes=p["czas_min"])).time(),
+    }
+    for p in POLACZENIA
 ]
 
 

@@ -26,17 +26,15 @@
   {% endif %}
 
   <article>
-    <header><strong>Bieżący etap</strong>{% if w_toku %} <span aria-busy="true">agenci pracują nad wnioskiem</span>{% endif %}</header>
+    <header><strong>Bieżący etap</strong></header>
+    <p role="status">{% if d.status == 'złożony' and uzytkownik.id_zolnierza == d.id_zolnierza %}<strong>Wniosek przyjęty</strong> — status „złożony”. {% endif %}{{ oczekiwanie or slownik_statusow.get(d.status, '') }}</p>
     <div class="grid">
-      <div><small>Status</small>
-        <p>{{ d.status }}<br><small>{{ slownik_statusow.get(d.status, "") }}</small></p>
-      </div>
       <div><small>Na tym etapie od</small>
         <p>{{ d.data_zmiany_statusu | czas }} · <strong>{{ d.data_zmiany_statusu | czas_na_etapie }}</strong></p>
       </div>
       <div><small>Osoba odpowiedzialna</small>
         <p>
-          {% if d.status == "w akceptacji" and zatwierdzajacy %}{{ zatwierdzajacy | osoba }}
+          {% if d.status in ["w akceptacji", "zatwierdzony"] and zatwierdzajacy %}{{ zatwierdzajacy | osoba }}
           {% elif d.status == "do uzupełnienia" %}{{ wnioskodawca | osoba }} <small>(uzupełnienie wniosku)</small>
           {% elif w_toku %}System Kwatermistrz <small>(agenci)</small>
           {% else %}–{% endif %}
@@ -45,6 +43,9 @@
     </div>
     {% if d.status == "do rozliczenia" and uzytkownik.id_zolnierza == d.id_zolnierza %}
     <p><a href="/app/wnioski/{{ d.id_delegacji }}/rozliczenie" role="button">Przejdź do rozliczenia</a></p>
+    {% endif %}
+    {% if d.status in ["zatwierdzony", "zorganizowany", "w trakcie", "rozliczony"] %}
+    <a href="/app/wnioski/{{ d.id_delegacji }}/podroz" role="button" class="outline">Przejazdy i wybór podróży</a>
     {% endif %}
     {% if d.przekazano_zastepcy %}
     <p class="komunikat">Przełożony nie podjął decyzji w terminie – wniosek przekazano osobie zastępującej{% if przekazanie %}
@@ -80,8 +81,8 @@
     <p><small>Złożony {{ d.data_zlozenia | czas }}</small></p>
   </article>
 
-  <article>
-    <header><strong>Historia obsługi</strong> <small>– log operacji i decyzji agentów</small></header>
+  <details class="panel-dodatkowy">
+    <summary><strong>Historia obsługi</strong> <small>({{ operacje | length }} operacji)</small></summary>
     {% if operacje %}
     <ol class="historia">
       {% for o in operacje %}
@@ -99,5 +100,5 @@
     {% else %}
     <p>Wniosek czeka w kolejce na agentów…</p>
     {% endif %}
-  </article>
+  </details>
 </div>

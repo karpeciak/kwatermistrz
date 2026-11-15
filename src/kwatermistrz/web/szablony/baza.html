@@ -8,7 +8,7 @@
   <link rel="stylesheet" href="/statyczne/styl.css">
   <script src="https://unpkg.com/htmx.org@2.0.4/dist/htmx.min.js"></script>
 </head>
-<body>
+<body{% if csrf %} hx-headers='{"X-CSRF-Token": "{{ csrf }}"}'{% endif %}>
   <header class="container">
     <nav>
       <ul>
@@ -17,13 +17,17 @@
       {% if uzytkownik %}
       <ul>
         <li><a href="/app/pulpit">Moje wnioski</a></li>
+        <li><a href="/app/podroze">Podróże</a></li>
         <li><a href="/app/wnioski/nowy">Nowy wniosek</a></li>
         <li><a href="/app/do-zatwierdzenia">Do zatwierdzenia{% if do_zatwierdzenia %} <span class="licznik">{{ do_zatwierdzenia }}</span>{% endif %}</a></li>
         <li>
           <details class="dropdown">
             <summary>{{ uzytkownik.stopien }} {{ uzytkownik.imie_nazwisko }}</summary>
             <ul dir="rtl">
-              <li><a href="/app/wyloguj">Wyloguj</a></li>
+              <li><form method="post" action="/app/wyloguj">
+                <input type="hidden" name="csrf" value="{{ csrf }}">
+                <button type="submit" class="outline">Wyloguj</button>
+              </form></li>
             </ul>
           </details>
         </li>

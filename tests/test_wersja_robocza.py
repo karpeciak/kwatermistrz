@@ -5,12 +5,12 @@ Szczegółowe testy wersji roboczej – podzadanie S22IT1S0P2-83.
 
 import pytest
 from fastapi.testclient import TestClient
+from pomoc_sesji import zaloguj_z_csrf
 from sqlalchemy import select
 
 from kwatermistrz.api.main import app, get_broker
 from kwatermistrz.db import sesja
 from kwatermistrz.models import Delegacja, Status
-from kwatermistrz.web.strony import CIASTECZKO
 
 CZESC = {"cel_wyjazdu": "szkolenie", "miejsce_docelowe": "Toruń", "srodek_transportu": "kolej"}
 CALOSC = {
@@ -27,7 +27,7 @@ CALOSC = {
 def klient(broker):
     app.dependency_overrides[get_broker] = lambda: broker
     with TestClient(app, follow_redirects=False) as c:
-        c.cookies.set(CIASTECZKO, "ZOL-003")
+        zaloguj_z_csrf(c, "ZOL-003")
         yield c
     app.dependency_overrides.clear()
 
@@ -58,7 +58,7 @@ def test_wznowienie_tylko_dla_wnioskodawcy(klient):
     pulpit = klient.get("/app/pulpit").text
     assert "Dokończ wniosek" in pulpit and "/app/wnioski/ROB-" not in pulpit
 
-    klient.cookies.set(CIASTECZKO, "ZOL-004")
+    zaloguj_z_csrf(klient, "ZOL-004")
     assert "Masz niezłożony wniosek" not in klient.get("/app/wnioski/nowy").text
 
 

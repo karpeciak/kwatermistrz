@@ -30,6 +30,7 @@
 </article>
 
 <form method="post" action="/app/wnioski/nowy">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
   {% for nazwa in ("id_przedsiewziecia", "cel_wyjazdu", "miejsce_docelowe", "data_wyjazdu", "data_powrotu",
                    "podstawa_numer_rozkazu", "podstawa_data_rozkazu", "srodek_transportu") %}
   <input type="hidden" name="{{ nazwa }}" value="{{ w.get(nazwa) or '' }}">

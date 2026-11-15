@@ -24,7 +24,8 @@
 {% endif %}
 
 {% if wnioski %}
-<form id="decyzja-zbiorcza" method="post" action="/app/do-zatwierdzenia"></form>
+<form id="decyzja-zbiorcza" method="post" action="/app/do-zatwierdzenia">
+  <input type="hidden" name="csrf" value="{{ csrf }}"></form>
 <div class="overflow-auto">
   <table>
     <thead>

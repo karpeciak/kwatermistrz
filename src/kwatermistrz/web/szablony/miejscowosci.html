@@ -1,0 +1,9 @@
+<div role="status">
+{% if blad %}<p>{{ blad }}</p>
+{% elif wyniki %}<p>Wybierz miejscowość:</p>
+<ul>{% for w in wyniki %}<li>
+  <button type="button" class="outline" data-miejscowosc="{{ w.nazwa }}">{{ w.nazwa }}{% if w.opis %} — {{ w.opis }}{% endif %}</button>
+</li>{% endfor %}</ul>
+{% else %}<p>Nie znaleziono miejscowości. Doprecyzuj nazwę lub wpisz ją samodzielnie.</p>{% endif %}
+<small>Źródło: <a href="https://photon.komoot.io/">Photon</a> / <a href="https://www.openstreetmap.org/copyright">© OpenStreetMap contributors</a>.</small>
+</div>

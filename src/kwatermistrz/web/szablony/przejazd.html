@@ -57,14 +57,14 @@
         <tbody>
           {% for p in lista %}
           {% set pol = polaczenia.get(p.id_polaczenia) if p.id_polaczenia else none %}
-          {% set zaznacz = (p.id_przejazdu in zaznaczone) if zaznaczone else p.rekomendowany %}
+          {% set zaznacz = (p.id_przejazdu in zaznaczone) if zaznaczone else p.id_przejazdu in rekomendowane %}
           <tr>
             <td>
               <label>
                 <input type="radio" name="wybor_{{ nr }}" value="{{ p.id_przejazdu }}" required {% if zaznacz %}checked{% endif %}>
                 {{ opis_wariantu(p) }}
               </label>
-              {% if p.rekomendowany %}
+              {% if p.id_przejazdu in rekomendowane %}
               <mark>rekomendowany</mark>
               {% if p.uzasadnienie %}<br><small>{{ p.uzasadnienie }}</small>{% endif %}
               {% endif %}
@@ -81,6 +81,9 @@
     </div>
   </fieldset>
   {% endfor %}
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  {% if d.srodek_transportu %}<label><input type="checkbox" name="zgoda_na_zmiane_transportu" value="true">
+    Akceptuję zmianę wnioskowanego środka transportu, jeśli wybieram inny wariant.</label>{% endif %}
   <label for="uzasadnienie">Przyczyna wyboru <small>(wymagana, gdy wybierasz wariant inny niż rekomendowany)</small>
     <textarea id="uzasadnienie" name="uzasadnienie" rows="2" maxlength="500">{{ uzasadnienie or '' }}</textarea>
   </label>
@@ -91,6 +94,7 @@
 <details>
   <summary>Żaden wariant mi nie odpowiada</summary>
   <form method="post" action="/app/wnioski/{{ d.id_delegacji }}/przejazd/odrzucenie">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
     <label for="przyczyna">Przyczyna odrzucenia *
       <textarea id="przyczyna" name="przyczyna" rows="2" maxlength="500" required></textarea>
     </label>

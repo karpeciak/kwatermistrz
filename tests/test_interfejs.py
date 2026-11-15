@@ -5,13 +5,14 @@ from datetime import timedelta
 
 import pytest
 from fastapi.testclient import TestClient
+from pomoc_sesji import zaloguj_z_csrf
 from sqlalchemy import func, select
 
 from kwatermistrz.agents import AGENCI
 from kwatermistrz.api.main import app, get_broker
 from kwatermistrz.db import sesja, teraz
 from kwatermistrz.models import Delegacja, DokumentKosztowy, LogOperacji, Status, Zolnierz
-from kwatermistrz.web.strony import CIASTECZKO, OPERACJA_PRZEKAZANIA, SLOWNIK_STATUSOW
+from kwatermistrz.web.strony import OPERACJA_PRZEKAZANIA, SLOWNIK_STATUSOW
 
 
 @pytest.fixture
@@ -23,9 +24,8 @@ def klient(broker):
 
 
 def zaloguj(klient, id_zolnierza):
-    r = klient.post("/app/logowanie", data={"id_zolnierza": id_zolnierza})
+    r = zaloguj_z_csrf(klient, id_zolnierza)
     assert r.status_code == 303
-    klient.cookies.set(CIASTECZKO, id_zolnierza)
 
 
 def test_bez_logowania_przekierowuje_do_logowania(klient):

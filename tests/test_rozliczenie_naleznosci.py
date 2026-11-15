@@ -8,6 +8,7 @@ from decimal import Decimal
 
 import pytest
 from fastapi.testclient import TestClient
+from pomoc_sesji import zaloguj_z_csrf
 from sqlalchemy import select
 
 from kwatermistrz.agents import AGENCI
@@ -16,7 +17,6 @@ from kwatermistrz.api.main import app, get_broker
 from kwatermistrz.db import sesja
 from kwatermistrz.messaging import Typ
 from kwatermistrz.models import Delegacja, DokumentKosztowy, Jednostka, LogDecyzji, Rozliczenie, Status
-from kwatermistrz.web.strony import CIASTECZKO
 
 ID = "DEL-ROZ-36"
 PODROZ = {
@@ -37,7 +37,7 @@ DOKUMENTY = [
 def klient(broker):
     app.dependency_overrides[get_broker] = lambda: broker
     with TestClient(app, follow_redirects=False) as c:
-        c.cookies.set(CIASTECZKO, "ZOL-003")
+        zaloguj_z_csrf(c, "ZOL-003")
         yield c
     app.dependency_overrides.clear()
 

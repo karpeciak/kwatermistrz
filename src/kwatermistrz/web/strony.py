@@ -14,6 +14,7 @@ Strony do rozbudowy w historyjkach sprintu 1:
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Annotated
+from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
@@ -23,6 +24,8 @@ from pydantic import ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from ..agents.koordynator import brakujace_elementy_organizacji
+from ..api.organizacja import przyjmij_wariant, przyjmij_wybor
 from ..api.rozliczenia import (
     KOMUNIKAT_PRZYJETY,
     KOMUNIKAT_ZATWIERDZONE,
@@ -41,7 +44,7 @@ from ..api.wnioski import (
     zapisz_wersje_robocza,
     zarejestruj_wniosek,
 )
-from ..api.zaleznosci import get_broker, get_sesja
+from ..api.zaleznosci import chron_formularze, dostep_do_podrozy, get_broker, get_sesja, sprawdz_csrf
 from ..api.zatwierdzenia import (
     budzet_jednostki,
     decyzja_zbiorcza,
@@ -49,8 +52,10 @@ from ..api.zatwierdzenia import (
     oczekujace_na_decyzje,
     wstrzymane_z_powodu_budzetu,
 )
+from ..config import settings
 from ..db import teraz
 from ..messaging import Broker
+from ..miejscowosci import BladMiejscowosci, ZrodloNiedostepne, szukaj_miejscowosci
 from ..models import (
     Agent,
     Delegacja,
@@ -59,18 +64,30 @@ from ..models import (
     LogDecyzji,
     LogOperacji,
     Przedsiewziecie,
+    Przejazd,
     Rozliczenie,
     Status,
+    StatusRezerwacji,
     Zolnierz,
 )
+from ..podroze import (
+    KRYTERIA,
+    SRODKI_TRANSPORTU,
+    Kryterium,
+    WariantPodrozyIn,
+    WyborPodrozy,
+    decyzja_do_uzgodnienia,
+    zestawienie,
+)
+from ..sesje import CIASTECZKO, CZAS_SESJI, odczytaj_sesje, token_csrf, utworz_sesje
 from ..walidacja import parsuj_date, waliduj_wniosek
 
 KATALOG = Path(__file__).parent
-CIASTECZKO = "kwatermistrz_uzytkownik"
 STREFA = ZoneInfo("Europe/Warsaw")
 
-# Etapy, na których pracują agenci – strona wniosku odświeża się wtedy sama
+# Sam status nie potwierdza pracy agenta. Krótkie odpytywanie służy oczekiwaniu na odpowiedź.
 ETAPY_W_TOKU = {Status.ZLOZONY, Status.ZATWIERDZONY}
+ETAPY_PODROZY = (Status.ZATWIERDZONY, Status.ZORGANIZOWANY, Status.W_TRAKCIE, Status.DO_ROZLICZENIA, Status.ROZLICZONY)
 
 # S22IT1S0P2-32: ścieżka etapów obsługi wniosku i statusy boczne
 ETAPY_PROCESU = [
@@ -95,7 +112,7 @@ SLOWNIK_STATUSOW = {
     Status.ZLOZONY: "Wniosek wpłynął do systemu – agenci sprawdzają jego kompletność i poprawność.",
     Status.DO_UZUPELNIENIA: "Wniosek wymaga poprawek – uzupełnij wskazane dane i złóż go ponownie.",
     Status.W_AKCEPTACJI: "Wniosek czeka na decyzję przełożonego.",
-    Status.ZATWIERDZONY: "Przełożony zgodził się na wyjazd – trwa przygotowanie polecenia, przejazdu i noclegu.",
+    Status.ZATWIERDZONY: "Przełożony zgodził się na wyjazd. Sprawdź przygotowanie podróży.",
     Status.ODRZUCONY: "Przełożony nie wyraził zgody na wyjazd.",
     Status.ZORGANIZOWANY: "Wyjazd jest przygotowany – polecenie wyjazdu, przejazd i nocleg są gotowe.",
     Status.W_TRAKCIE: "Trwa wyjazd służbowy.",
@@ -105,7 +122,7 @@ SLOWNIK_STATUSOW = {
 WYNIK_DOKUMENT_PRZYJETY = "dokument-przyjety"
 
 szablony = Jinja2Templates(directory=KATALOG / "szablony")
-router = APIRouter(prefix="/app", include_in_schema=False)
+router = APIRouter(prefix="/app", include_in_schema=False, dependencies=[Depends(chron_formularze)])
 
 
 # ---------------------------------------------------------------- filtry szablonów
@@ -176,11 +193,29 @@ szablony.env.globals["slownik_statusow"] = SLOWNIK_STATUSOW
 
 
 def biezacy_uzytkownik(request: Request, s: Session = Depends(get_sesja)) -> Zolnierz:
-    id_zolnierza = request.cookies.get(CIASTECZKO)
+    id_zolnierza = odczytaj_sesje(request.cookies.get(CIASTECZKO), settings.session_secret.get_secret_value())
     uzytkownik = s.get(Zolnierz, id_zolnierza) if id_zolnierza else None
     if uzytkownik is None:
+        if request.headers.get("HX-Request", "").lower() == "true":
+            raise HTTPException(401, "Sesja wygasła. Zaloguj się ponownie.", headers={"HX-Redirect": "/app/logowanie"})
         raise HTTPException(303, headers={"Location": "/app/logowanie"})
     return uzytkownik
+
+
+@router.get("/miejscowosci", response_class=HTMLResponse)
+def wyszukaj_miejscowosci(
+    request: Request,
+    miejsce_docelowe: str = "",
+    uzytkownik: Zolnierz = Depends(biezacy_uzytkownik),
+):
+    wyniki, blad = [], ""
+    try:
+        wyniki = szukaj_miejscowosci(miejsce_docelowe)
+    except (BladMiejscowosci, ZrodloNiedostepne) as e:
+        blad = str(e)
+    return szablony.TemplateResponse(
+        request=request, name="miejscowosci.html", context={"wyniki": wyniki, "blad": blad}
+    )
 
 
 def liczba_do_zatwierdzenia(s: Session, uzytkownik: Zolnierz) -> int:
@@ -192,8 +227,10 @@ def liczba_do_zatwierdzenia(s: Session, uzytkownik: Zolnierz) -> int:
 
 
 def strona(request: Request, s: Session, szablon: str, uzytkownik: Zolnierz | None = None, **kontekst):
+    kontekst.setdefault("srodki_transportu", SRODKI_TRANSPORTU)
     if uzytkownik is not None:
         kontekst["do_zatwierdzenia"] = liczba_do_zatwierdzenia(s, uzytkownik)
+        kontekst["csrf"] = token_csrf(request.cookies.get(CIASTECZKO, ""), settings.session_secret.get_secret_value())
     return szablony.TemplateResponse(request, szablon, {"uzytkownik": uzytkownik, **kontekst})
 
 
@@ -212,19 +249,205 @@ def logowanie(request: Request, s: Session = Depends(get_sesja)):
 
 
 @router.post("/logowanie")
-def zaloguj(id_zolnierza: str = Form(...), s: Session = Depends(get_sesja)):
+def zaloguj(request: Request, id_zolnierza: str = Form(...), s: Session = Depends(get_sesja)):
     if s.get(Zolnierz, id_zolnierza) is None:
         raise HTTPException(404, "Nie ma takiego żołnierza")
     odpowiedz = RedirectResponse("/app/pulpit", status_code=303)
-    odpowiedz.set_cookie(CIASTECZKO, id_zolnierza, httponly=True, samesite="lax")
+    odpowiedz.set_cookie(
+        CIASTECZKO,
+        utworz_sesje(id_zolnierza, settings.session_secret.get_secret_value()),
+        max_age=CZAS_SESJI,
+        httponly=True,
+        samesite="lax",
+        secure=request.url.scheme == "https",
+    )
     return odpowiedz
 
 
-@router.get("/wyloguj")
-def wyloguj():
+@router.post("/wyloguj")
+def wyloguj(request: Request, csrf: str = Form("")):
+    sprawdz_csrf(request, csrf)
     odpowiedz = RedirectResponse("/app/logowanie", status_code=303)
     odpowiedz.delete_cookie(CIASTECZKO)
     return odpowiedz
+
+
+# ---------------------------------------------------------------- transport S22IT1S0P2-27, -57
+
+
+@router.get("/podroze", response_class=HTMLResponse)
+def lista_podrozy(
+    request: Request,
+    s: Session = Depends(get_sesja),
+    uzytkownik: Zolnierz = Depends(biezacy_uzytkownik),
+):
+    wnioski = s.scalars(
+        select(Delegacja)
+        .where(
+            Delegacja.status.in_(ETAPY_PODROZY),
+            (Delegacja.id_zolnierza == uzytkownik.id_zolnierza)
+            | (Delegacja.id_zatwierdzajacego == uzytkownik.id_zolnierza),
+        )
+        .order_by(Delegacja.data_zmiany_statusu.desc(), Delegacja.id_delegacji)
+    ).all()
+    return strona(
+        request,
+        s,
+        "podroze.html",
+        uzytkownik,
+        wnioski=wnioski,
+        wnioskodawcy={z.id_zolnierza: z for z in s.scalars(select(Zolnierz))},
+    )
+
+
+def widok_podrozy(
+    id_delegacji: str,
+    request: Request,
+    s: Session,
+    uzytkownik: Zolnierz,
+    kryterium: Kryterium = "standardowe",
+    przekazano: bool = False,
+    oferta: str | None = None,
+    blad: str | None = None,
+    status: int = 200,
+    dane_oferty: dict | None = None,
+    dane_wyboru: dict | None = None,
+):
+    d = dostep_do_podrozy(s, id_delegacji, uzytkownik)
+    dane = zestawienie(s, d, kryterium)
+    rozstrzygniete = dane["do_uzgodnienia"] or any(w["status"] != "propozycja" for w in dane["warianty"])
+    odpowiedz = strona(
+        request,
+        s,
+        "podroz.html",
+        uzytkownik,
+        d=d,
+        **dane,
+        kryteria=KRYTERIA,
+        przekazano=przekazano,
+        rozstrzygniete=rozstrzygniete,
+        moze_wybrac=d.status == Status.ZATWIERDZONY and uzytkownik.id_zolnierza == d.id_zatwierdzajacego,
+        blad=blad,
+        dane_oferty=dane_oferty or {"klucz": str(uuid4())},
+        dane_wyboru=dane_wyboru or {},
+        oferta_zapisana=oferta and any(w["id_polaczenia"] == oferta for w in dane["warianty"]),
+        srodki_transportu=SRODKI_TRANSPORTU,
+    )
+    odpowiedz.status_code = status
+    return odpowiedz
+
+
+@router.get("/wnioski/{id_delegacji}/podroz", response_class=HTMLResponse)
+def podroz(
+    id_delegacji: str,
+    request: Request,
+    kryterium: Kryterium = "standardowe",
+    przekazano: bool = False,
+    oferta: str | None = None,
+    s: Session = Depends(get_sesja),
+    uzytkownik: Zolnierz = Depends(biezacy_uzytkownik),
+):
+    return widok_podrozy(id_delegacji, request, s, uzytkownik, kryterium, przekazano, oferta)
+
+
+@router.post("/wnioski/{id_delegacji}/podroz/warianty", response_class=HTMLResponse)
+async def uzupelnij_wariant(
+    id_delegacji: str,
+    request: Request,
+    s: Session = Depends(get_sesja),
+    broker: Broker = Depends(get_broker),
+    uzytkownik: Zolnierz = Depends(biezacy_uzytkownik),
+):
+    formularz = await request.form()
+    sprawdz_csrf(request, formularz.get("csrf"))
+    dostep_do_podrozy(s, id_delegacji, uzytkownik, zapis=True)
+    dane = {pole: str(formularz.get(pole, "")) for pole in WariantPodrozyIn.model_fields}
+    try:
+        wariant = WariantPodrozyIn.model_validate(dane)
+        await przyjmij_wariant(s, broker, id_delegacji, uzytkownik, wariant)
+    except ValidationError as e:
+        b = e.errors()[0]
+        etykiety = {
+            "klucz": "identyfikator formularza (odśwież stronę)",
+            "kierunek": "kierunek",
+            "przewoznik": "przewoźnik",
+            "srodek_transportu": "środek transportu",
+            "godzina_odjazdu": "godzina odjazdu",
+            "czas_min": "czas przejazdu (1–2880 minut)",
+            "koszt": "koszt (nieujemna kwota, do dwóch miejsc po przecinku)",
+            "liczba_przesiadek": "liczba przesiadek (0–20)",
+            "punktualnosc": "punktualność (0–100%)",
+            "ocena_bezpieczenstwa": "ocena bezpieczeństwa (1–5)",
+            "zrodlo": "źródło i podstawa oceny",
+        }
+        return widok_podrozy(
+            id_delegacji,
+            request,
+            s,
+            uzytkownik,
+            status=422,
+            dane_oferty=dane,
+            blad="Sprawdź pole: " + etykiety.get(str(b["loc"][0]), "dane oferty") + ".",
+        )
+    except HTTPException as e:
+        if e.status_code not in (400, 409, 422):
+            raise
+        return widok_podrozy(
+            id_delegacji, request, s, uzytkownik, status=e.status_code, dane_oferty=dane, blad=str(e.detail)
+        )
+    return RedirectResponse(f"/app/wnioski/{id_delegacji}/podroz?oferta={wariant.id_polaczenia}", status_code=303)
+
+
+@router.post("/wnioski/{id_delegacji}/podroz")
+async def wybierz_podroz(
+    id_delegacji: str,
+    request: Request,
+    id_tam: str = Form(""),
+    id_powrot: str = Form(""),
+    akcja: str = Form("wybierz"),
+    kryterium: Annotated[Kryterium, Form()] = "standardowe",
+    zgoda_na_zmiane_transportu: Annotated[bool, Form()] = False,
+    uzasadnienie: str = Form(""),
+    csrf: str = Form(""),
+    s: Session = Depends(get_sesja),
+    broker: Broker = Depends(get_broker),
+    uzytkownik: Zolnierz = Depends(biezacy_uzytkownik),
+):
+    sprawdz_csrf(request, csrf)
+    dostep_do_podrozy(s, id_delegacji, uzytkownik, zapis=True)
+    if akcja not in ("wybierz", "odrzuc"):
+        raise HTTPException(400, "Nieznana decyzja")
+    try:
+        dane = WyborPodrozy(
+            id_tam=(id_tam or None) if akcja == "wybierz" else None,
+            id_powrot=(id_powrot or None) if akcja == "wybierz" else None,
+            odrzuc_wszystkie=akcja == "odrzuc",
+            kryterium=kryterium,
+            zgoda_na_zmiane_transportu=zgoda_na_zmiane_transportu,
+            uzasadnienie=uzasadnienie,
+        )
+        await przyjmij_wybor(s, broker, id_delegacji, uzytkownik, dane)
+    except (ValidationError, HTTPException) as e:
+        if isinstance(e, HTTPException) and e.status_code not in (400, 409, 422):
+            raise
+        return widok_podrozy(
+            id_delegacji,
+            request,
+            s,
+            uzytkownik,
+            kryterium=kryterium,
+            status=e.status_code if isinstance(e, HTTPException) else 422,
+            blad=str(e.detail)
+            if isinstance(e, HTTPException)
+            else "Wybierz oba przejazdy. Przy odrzuceniu wszystkich wariantów podaj uzasadnienie.",
+            dane_wyboru={
+                "id_tam": id_tam,
+                "id_powrot": id_powrot,
+                "uzasadnienie": uzasadnienie,
+                "zgoda_na_zmiane_transportu": zgoda_na_zmiane_transportu,
+            },
+        )
+    return RedirectResponse(f"/app/wnioski/{id_delegacji}/podroz?przekazano=true", status_code=303)
 
 
 # ---------------------------------------------------------------- wnioskodawca
@@ -424,6 +647,33 @@ def dane_wniosku(s: Session, id_delegacji: str, uzytkownik: Zolnierz) -> dict:
         ]
         if walidacje and walidacje[-1].wybrany_wariant == "Do poprawy":
             bledy = walidacje[-1].uzasadnienie.split("; ")
+    oczekiwanie = None
+    wynik_transportu = any(o.id_agenta == "AG-04" for o in operacje)
+    odswiezaj = d.status in ETAPY_W_TOKU and (teraz() - d.data_zmiany_statusu).total_seconds() < 60
+    if d.status == Status.ZLOZONY:
+        oczekiwanie = "Oczekiwanie na obsługę wniosku."
+    elif d.status == Status.W_AKCEPTACJI:
+        oczekiwanie = "Wniosek oczekuje na decyzję przełożonego."
+    elif d.status == Status.ZATWIERDZONY:
+        warianty = list(s.scalars(select(Przejazd).where(Przejazd.id_delegacji == id_delegacji)))
+        if decyzja_do_uzgodnienia(s, d) or any(r.status == StatusRezerwacji.DO_UZGODNIENIA for r in warianty):
+            oczekiwanie = "Podróż została przekazana do dodatkowego uzgodnienia."
+            odswiezaj = False
+        elif {"Tam", "Powrót"} <= {r.kierunek for r in warianty if r.status == StatusRezerwacji.WYBRANA}:
+            brakujace = brakujace_elementy_organizacji(s, d)
+            oczekiwanie = "Transport został wybrany."
+            if brakujace:
+                oczekiwanie += " Organizacja oczekuje na: " + ", ".join(brakujace) + "."
+            odswiezaj = False
+        elif warianty or wynik_transportu:
+            porownanie = zestawienie(s, d)
+            if not porownanie["mozna_zatwierdzic"] or porownanie["brak_spojnej_preferowanej_pary"]:
+                oczekiwanie = "Brak kompletu odpowiednich przejazdów. Podróż wymaga uzgodnienia."
+            else:
+                oczekiwanie = "Warianty są przygotowane. Oczekiwanie na wybór podróży."
+            odswiezaj = False
+        else:
+            oczekiwanie = "Oczekiwanie na przygotowanie wariantów podróży."
     etap = ETAP_STATUSU_BOCZNEGO.get(d.status, d.status)
     przypomnienie = next((o for o in operacje if o.operacja == OPERACJA_PRZYPOMNIENIA), None)
     przekazanie = next((o for o in operacje if o.operacja == OPERACJA_PRZEKAZANIA), None)
@@ -437,14 +687,16 @@ def dane_wniosku(s: Session, id_delegacji: str, uzytkownik: Zolnierz) -> dict:
         decyzje=decyzje,
         agenci={a.id_agenta: a.nazwa for a in s.scalars(select(Agent))},
         bledy=bledy,
-        w_toku=d.status in ETAPY_W_TOKU,
+        w_toku=odswiezaj,
+        oczekiwanie=oczekiwanie,
         etapy=ETAPY_PROCESU,
         pozycja_etapu=ETAPY_PROCESU.index(etap) if etap in ETAPY_PROCESU else -1,
         status_boczny=d.status in ETAP_STATUSU_BOCZNEGO,
         przypomnienie=przypomnienie,
         przekazanie=przekazanie,
         ostatnia_aktywnosc=ostatnia_aktywnosc,
-        nieaktualny=d.status in ETAPY_W_TOKU and teraz() - ostatnia_aktywnosc > NIEAKTUALNY_PO,
+        nieaktualny=(d.status == Status.ZLOZONY or (d.status == Status.ZATWIERDZONY and not wynik_transportu))
+        and teraz() - ostatnia_aktywnosc > NIEAKTUALNY_PO,
     )
 
 
@@ -466,7 +718,9 @@ def stan_wniosku(
     uzytkownik: Zolnierz = Depends(biezacy_uzytkownik),
 ):
     """Fragment strony odświeżany przez HTMX, dopóki agenci pracują nad wnioskiem."""
-    return szablony.TemplateResponse(request, "_stan_wniosku.html", dane_wniosku(s, id_delegacji, uzytkownik))
+    return szablony.TemplateResponse(
+        request, "_stan_wniosku.html", {**dane_wniosku(s, id_delegacji, uzytkownik), "uzytkownik": uzytkownik}
+    )
 
 
 # ---------------------------------------------------------------- rozliczenie
@@ -693,10 +947,20 @@ async def decyduj(
         return szablony.TemplateResponse(
             request,
             "_wiersz_decyzji.html",
-            {"d": d, "wnioskodawca": wnioskodawca, "blad": "Podaj uzasadnienie odmowy lub zwrotu do uzupełnienia"},
+            {
+                "d": d,
+                "wnioskodawca": wnioskodawca,
+                "blad": "Podaj uzasadnienie odmowy lub zwrotu do uzupełnienia",
+                "csrf": token_csrf(request.cookies.get(CIASTECZKO, ""), settings.session_secret.get_secret_value()),
+            },
         )
     wynik = await decyzja_zbiorcza(s, broker, uzytkownik, [id_delegacji], decyzja, uzasadnienie)
-    kontekst = {"d": d, "wnioskodawca": wnioskodawca, "koszt": koszt_delegacji(d)}
+    kontekst = {
+        "d": d,
+        "wnioskodawca": wnioskodawca,
+        "koszt": koszt_delegacji(d),
+        "csrf": token_csrf(request.cookies.get(CIASTECZKO, ""), settings.session_secret.get_secret_value()),
+    }
     if wynik.wstrzymane:
         kontekst.update(wstrzymany=True, blad=wynik.komunikat)
     elif wynik.blad:

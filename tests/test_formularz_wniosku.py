@@ -2,12 +2,12 @@
 
 import pytest
 from fastapi.testclient import TestClient
+from pomoc_sesji import zaloguj_z_csrf
 from sqlalchemy import func, select
 
 from kwatermistrz.api.main import app, get_broker
 from kwatermistrz.db import sesja
 from kwatermistrz.models import Delegacja
-from kwatermistrz.web.strony import CIASTECZKO
 
 WNIOSEK = {
     "cel_wyjazdu": "szkolenie",
@@ -25,7 +25,7 @@ WNIOSEK = {
 def klient(broker):
     app.dependency_overrides[get_broker] = lambda: broker
     with TestClient(app, follow_redirects=False) as c:
-        c.cookies.set(CIASTECZKO, "ZOL-003")
+        zaloguj_z_csrf(c, "ZOL-003")
         yield c
     app.dependency_overrides.clear()
 

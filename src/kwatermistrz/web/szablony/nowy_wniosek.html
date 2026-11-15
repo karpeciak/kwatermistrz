@@ -17,6 +17,7 @@
     (etap: {{ robocza.etap_przygotowania }}). Zapisane dane są wpisane poniżej – dokończ od miejsca przerwania.</p>
   <form method="post" action="/app/wnioski/nowy/roboczy/rezygnacja" class="przyciski-formularza"
         onsubmit="return confirm('Usunąć zapisaną wersję roboczą i zacząć od nowa?')">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
     <button type="submit" class="secondary outline">Zrezygnuj i zacznij od nowa</button>
   </form>
 </div>
@@ -25,7 +26,7 @@
 {% if bledy %}
 <div class="bledy" role="alert">
   <strong>Wniosku nie można jeszcze złożyć – popraw zaznaczone pola:</strong>
-  <ul>{% for b in bledy %}<li>{{ b.komunikat }}</li>{% endfor %}</ul>
+  <p>Sprawdź pola oznaczone poniżej.</p>
 </div>
 {% endif %}
 
@@ -35,6 +36,7 @@
 <form method="post" action="/app/wnioski/nowy/podsumowanie" id="formularz-wniosku"
       hx-post="/app/wnioski/nowy/roboczy" hx-trigger="change delay:1s, input delay:3s"
       hx-target="#autozapis" hx-swap="innerHTML">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
   <fieldset>
     <legend><strong>Wnioskodawca</strong> <small>(dane z ewidencji)</small></legend>
     <p>{{ uzytkownik.stopien }} {{ uzytkownik.imie_nazwisko }}
@@ -64,11 +66,18 @@
         {{ blad("cel_wyjazdu") }}
       </label>
       <label>Miejsce docelowe *
-        <input name="miejsce_docelowe" required value="{{ w.get('miejsce_docelowe') or '' }}"
+        <input id="miejsce-docelowe" name="miejsce_docelowe" required maxlength="80" value="{{ w.get('miejsce_docelowe') or '' }}"
                placeholder="miejscowość, jednostka docelowa"{{ aria("miejsce_docelowe") }}>
         {{ blad("miejsce_docelowe") }}
       </label>
     </div>
+    <details class="pomoc-pola">
+      <summary>Wyszukaj miejscowość</summary>
+      <button type="button" class="secondary" hx-get="/app/miejscowosci" hx-include="#miejsce-docelowe"
+        hx-target="#wyniki-miejscowosci" hx-disabled-elt="this">Szukaj w Polsce</button>
+      <div id="wyniki-miejscowosci" aria-live="polite"></div>
+      <small>Do Photon wysyłamy tylko nazwę miejscowości. Możesz też wpisać ją samodzielnie.</small>
+    </details>
     <datalist id="cele-wyjazdu">
       {% for cel in ("szkolenie", "kurs", "ćwiczenia", "odprawa", "egzamin", "oddelegowanie") %}<option value="{{ cel }}">{% endfor %}
     </datalist>
@@ -106,8 +115,7 @@
     <div class="grid">
       <label>Preferowany transport
         <select name="srodek_transportu" id="srodek_transportu">
-          {% for wartosc, etykieta in (("kolej", "kolej"), ("transport wojskowy", "transport wojskowy"),
-                                       ("pojazd służbowy", "pojazd służbowy"), ("samochód prywatny", "pojazd prywatny")) %}
+          {% for wartosc, etykieta in srodki_transportu.items() %}
           <option value="{{ wartosc }}" {% if w.get("srodek_transportu") == wartosc %}selected{% endif %}>{{ etykieta }}</option>
           {% endfor %}
         </select>
@@ -139,23 +147,40 @@
     <span id="autozapis" aria-live="polite"></span>
   </div>
 </form>
+<script src="/statyczne/miejscowosci.js" defer></script>
 
 <script>
   (() => {
     const f = document.getElementById("formularz-wniosku");
     const pole = (n) => f.elements[n];
+    const mapowanie = [["cel_wyjazdu", "cel"], ["miejsce_docelowe", "miejsce"], ["data_wyjazdu", "od"], ["data_powrotu", "do"]];
+    const poczatkowy = pole("id_przedsiewziecia").selectedOptions[0];
+    for (const [nazwa, klucz] of mapowanie) {
+      if (poczatkowy?.value && pole(nazwa).value === poczatkowy.dataset[klucz]) {
+        pole(nazwa).dataset.automatyczna = pole(nazwa).value;
+      }
+    }
     pole("id_przedsiewziecia").addEventListener("change", (e) => {
       const o = e.target.selectedOptions[0];
       if (!o || !o.value) return;
-      for (const [nazwa, klucz] of [["cel_wyjazdu", "cel"], ["miejsce_docelowe", "miejsce"], ["data_wyjazdu", "od"], ["data_powrotu", "do"]]) {
-        if (!pole(nazwa).value) pole(nazwa).value = o.dataset[klucz];
+      for (const [nazwa, klucz] of mapowanie) {
+        if (!pole(nazwa).value || pole(nazwa).value === pole(nazwa).dataset.automatyczna) {
+          pole(nazwa).value = o.dataset[klucz];
+          pole(nazwa).dataset.automatyczna = o.dataset[klucz];
+        }
       }
       pole("data_powrotu").min = pole("data_wyjazdu").value;
     });
     pole("data_wyjazdu").addEventListener("change", () => { pole("data_powrotu").min = pole("data_wyjazdu").value; });
-    pole("srodek_transportu").addEventListener("change", (e) => {
-      document.getElementById("dane-pojazdu").hidden = e.target.value !== "samochód prywatny";
-    });
+    const pojazd = () => {
+      const prywatny = pole("srodek_transportu").value === "samochód prywatny";
+      document.getElementById("dane-pojazdu").hidden = !prywatny;
+      pole("nr_rejestracyjny").required = prywatny;
+      pole("pojemnosc_silnika").required = prywatny;
+    };
+    pole("srodek_transportu").addEventListener("change", pojazd);
+    pole("data_powrotu").min = pole("data_wyjazdu").value;
+    pojazd();
   })();
 </script>
 {% endblock %}
