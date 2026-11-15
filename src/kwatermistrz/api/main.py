@@ -22,7 +22,7 @@ from ..db import migruj, sesja
 from ..messaging import Broker
 from ..models import Zolnierz
 from ..seed import zaladuj_dane_poczatkowe
-from ..web import strony
+from ..web import strony, wyjazd
 from . import organizacja, rozliczenia, wnioski, zatwierdzenia
 from .schemas import ZolnierzOut
 from .zaleznosci import get_broker, get_sesja
@@ -51,6 +51,7 @@ for modul in (wnioski, zatwierdzenia, organizacja, rozliczenia):
 
 # Interfejs użytkownika (strony pod /app) – src/kwatermistrz/web/
 app.include_router(strony.router)
+app.include_router(wyjazd.router)  # S22IT1S0P2-45, -99
 app.mount("/statyczne", StaticFiles(directory=strony.KATALOG / "statyczne"), name="statyczne")
 
 
