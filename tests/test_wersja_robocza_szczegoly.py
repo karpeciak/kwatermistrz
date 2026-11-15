@@ -7,13 +7,13 @@ i to, że rezygnacja nie dotyka wniosków już złożonych.
 
 import pytest
 from fastapi.testclient import TestClient
+from pomoc_sesji import zaloguj_z_csrf
 from sqlalchemy import select
 
 from kwatermistrz.api.main import app, get_broker
 from kwatermistrz.api.wnioski import etap_przygotowania
 from kwatermistrz.db import sesja
 from kwatermistrz.models import Delegacja, Status
-from kwatermistrz.web.strony import CIASTECZKO
 
 AUTOZAPIS = "/app/wnioski/nowy/roboczy"
 CEL_I_TERMIN = {
@@ -28,7 +28,7 @@ CEL_I_TERMIN = {
 def klient(broker):
     app.dependency_overrides[get_broker] = lambda: broker
     with TestClient(app, follow_redirects=False) as c:
-        c.cookies.set(CIASTECZKO, "ZOL-003")
+        zaloguj_z_csrf(c, "ZOL-003")
         yield c
     app.dependency_overrides.clear()
 
@@ -115,7 +115,8 @@ def test_autozapis_wymaga_zalogowania(klient):
 
 def test_wersje_robocze_sa_osobne_dla_kazdego_wnioskodawcy(klient):
     klient.post(AUTOZAPIS, data={"cel_wyjazdu": "kurs A"})
-    klient.cookies.set(CIASTECZKO, "ZOL-004")
+    klient.cookies.clear()
+    zaloguj_z_csrf(klient, "ZOL-004")
     klient.post(AUTOZAPIS, data={"cel_wyjazdu": "kurs B"})
 
     assert [w.dane_wniosku["cel_wyjazdu"] for w in wersje_robocze("ZOL-003")] == ["kurs A"]
