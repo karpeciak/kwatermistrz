@@ -130,18 +130,34 @@
   (() => {
     const f = document.getElementById("formularz-wniosku");
     const pole = (n) => f.elements[n];
+    const mapowanie = [["cel_wyjazdu", "cel"], ["miejsce_docelowe", "miejsce"], ["data_wyjazdu", "od"], ["data_powrotu", "do"]];
+    const poczatkowy = pole("id_przedsiewziecia").selectedOptions[0];
+    for (const [nazwa, klucz] of mapowanie) {
+      if (poczatkowy?.value && pole(nazwa).value === poczatkowy.dataset[klucz]) {
+        pole(nazwa).dataset.automatyczna = pole(nazwa).value;
+      }
+    }
     pole("id_przedsiewziecia").addEventListener("change", (e) => {
       const o = e.target.selectedOptions[0];
       if (!o || !o.value) return;
-      for (const [nazwa, klucz] of [["cel_wyjazdu", "cel"], ["miejsce_docelowe", "miejsce"], ["data_wyjazdu", "od"], ["data_powrotu", "do"]]) {
-        if (!pole(nazwa).value) pole(nazwa).value = o.dataset[klucz];
+      for (const [nazwa, klucz] of mapowanie) {
+        if (!pole(nazwa).value || pole(nazwa).value === pole(nazwa).dataset.automatyczna) {
+          pole(nazwa).value = o.dataset[klucz];
+          pole(nazwa).dataset.automatyczna = o.dataset[klucz];
+        }
       }
       pole("data_powrotu").min = pole("data_wyjazdu").value;
     });
     pole("data_wyjazdu").addEventListener("change", () => { pole("data_powrotu").min = pole("data_wyjazdu").value; });
-    pole("srodek_transportu").addEventListener("change", (e) => {
-      document.getElementById("dane-pojazdu").hidden = e.target.value !== "samochód prywatny";
-    });
+    const pojazd = () => {
+      const prywatny = pole("srodek_transportu").value === "samochód prywatny";
+      document.getElementById("dane-pojazdu").hidden = !prywatny;
+      pole("nr_rejestracyjny").required = prywatny;
+      pole("pojemnosc_silnika").required = prywatny;
+    };
+    pole("srodek_transportu").addEventListener("change", pojazd);
+    pole("data_powrotu").min = pole("data_wyjazdu").value;
+    pojazd();
   })();
 </script>
 {% endblock %}

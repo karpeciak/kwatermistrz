@@ -97,7 +97,7 @@ SLOWNIK_STATUSOW = {
     Status.ZLOZONY: "Wniosek wpłynął do systemu – agenci sprawdzają jego kompletność i poprawność.",
     Status.DO_UZUPELNIENIA: "Wniosek wymaga poprawek – uzupełnij wskazane dane i złóż go ponownie.",
     Status.W_AKCEPTACJI: "Wniosek czeka na decyzję przełożonego.",
-    Status.ZATWIERDZONY: "Przełożony zgodził się na wyjazd – trwa przygotowanie polecenia, przejazdu i noclegu.",
+    Status.ZATWIERDZONY: "Przełożony zgodził się na wyjazd. Sprawdź przygotowanie podróży.",
     Status.ODRZUCONY: "Przełożony nie wyraził zgody na wyjazd.",
     Status.ZORGANIZOWANY: "Wyjazd jest przygotowany – polecenie wyjazdu, przejazd i nocleg są gotowe.",
     Status.W_TRAKCIE: "Trwa wyjazd służbowy.",
@@ -567,6 +567,7 @@ def dane_wniosku(s: Session, id_delegacji: str, uzytkownik: Zolnierz) -> dict:
         if walidacje and walidacje[-1].wybrany_wariant == "Do poprawy":
             bledy = walidacje[-1].uzasadnienie.split("; ")
     oczekiwanie = None
+    wynik_transportu = any(o.id_agenta == "AG-04" for o in operacje)
     odswiezaj = d.status in ETAPY_W_TOKU and (teraz() - d.data_zmiany_statusu).total_seconds() < 60
     if d.status == Status.ZLOZONY:
         oczekiwanie = "Oczekiwanie na obsługę wniosku."
@@ -574,7 +575,6 @@ def dane_wniosku(s: Session, id_delegacji: str, uzytkownik: Zolnierz) -> dict:
         oczekiwanie = "Wniosek oczekuje na decyzję przełożonego."
     elif d.status == Status.ZATWIERDZONY:
         warianty = list(s.scalars(select(Przejazd).where(Przejazd.id_delegacji == id_delegacji)))
-        wynik_transportu = any(o.id_agenta == "AG-04" for o in operacje)
         if decyzja_do_uzgodnienia(s, d) or any(r.status == StatusRezerwacji.DO_UZGODNIENIA for r in warianty):
             oczekiwanie = "Podróż została przekazana do dodatkowego uzgodnienia."
             odswiezaj = False
@@ -614,7 +614,8 @@ def dane_wniosku(s: Session, id_delegacji: str, uzytkownik: Zolnierz) -> dict:
         przypomnienie=przypomnienie,
         przekazanie=przekazanie,
         ostatnia_aktywnosc=ostatnia_aktywnosc,
-        nieaktualny=d.status in ETAPY_W_TOKU and teraz() - ostatnia_aktywnosc > NIEAKTUALNY_PO,
+        nieaktualny=(d.status == Status.ZLOZONY or (d.status == Status.ZATWIERDZONY and not wynik_transportu))
+        and teraz() - ostatnia_aktywnosc > NIEAKTUALNY_PO,
     )
 
 

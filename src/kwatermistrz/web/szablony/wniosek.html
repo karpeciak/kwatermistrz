@@ -2,12 +2,5 @@
 {% block tytul %}Wniosek {{ d.id_delegacji }}{% endblock %}
 {% block tresc %}
 <p><a href="/app/pulpit">← Moje wnioski</a></p>
-{# S22IT1S0P2-52: potwierdzenie złożenia – numer, data złożenia, status „złożony” #}
-{% if d.status == "złożony" and uzytkownik.id_zolnierza == d.id_zolnierza %}
-<p class="komunikat potwierdzenie" role="status">
-  <strong>Wniosek przyjęty.</strong> Numer {{ d.id_delegacji }}, złożony {{ d.data_zlozenia | czas }}, status „złożony”.
-  System sprawdza kompletność danych i przekaże wniosek przełożonemu.
-</p>
-{% endif %}
 {% include "_stan_wniosku.html" %}
 {% endblock %}
