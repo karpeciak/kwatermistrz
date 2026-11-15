@@ -46,6 +46,7 @@ Restart zachowuje dane. Launcher nie dodaje wniosków demo. Próby autora usuni�
 ## Oddanie pracy
 
 Gałąź: feature/S22IT1S0P2-27-wybor-podrozy. Opis PR: S22IT1S0P2-27-PR.md.
-Uruchom z katalogu repozytorium `./udostepnij_prace.ps1`: sprawdza gałąź, czystość
+Uruchom z katalogu repozytorium `.\udostepnij_prace.cmd`: sprawdza gałąź, czystość
 zmian, Ruff, pełne pytest oraz aktualność main. Dopiero po sukcesie wysyła własną
 gałąź i podaje link do utworzenia PR. Main scala wyłącznie PO po zielonym CI.
+Wersja CMD działa także przy wyłączonym uruchamianiu skryptów PowerShell.
