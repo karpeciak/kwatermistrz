@@ -2,6 +2,7 @@
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -39,6 +40,11 @@ class JednostkaOut(BaseModel):
     id_jednostki: str
     nazwa: str
     miejscowosc: str
+
+
+@router.get("", response_model=list[JednostkaOut])
+def lista_jednostek(s: Session = Depends(get_sesja)):
+    return s.scalars(select(Jednostka).order_by(Jednostka.id_jednostki)).all()
 
 
 @router.post("", response_model=JednostkaOut, status_code=201)
