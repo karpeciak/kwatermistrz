@@ -1,0 +1,108 @@
+
+{% extends "baza.html" %}
+
+{% block tytul %}Ewidencja jednostek{% endblock %}
+
+{% block tresc %}
+
+<h2>Ewidencja jednostek wojskowych</h2>
+
+<p>
+  Rejestracja i przeglądanie jednostek wojskowych
+  wykorzystywanych w systemie Kwatermistrz.
+</p>
+
+{% if dodano %}
+<p class="komunikat" role="status">
+  Jednostka wojskowa została pomyślnie zarejestrowana.
+</p>
+{% endif %}
+
+{% if blad %}
+<div class="bledy" role="alert">
+  <strong>Nie można zarejestrować jednostki.</strong>
+  <p>{{ blad }}</p>
+</div>
+{% endif %}
+
+<article>
+  <header>
+    <h3>Dodaj nową jednostkę wojskową</h3>
+  </header>
+
+  <form method="post" action="/app/jednostki">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+
+    <label for="id_jednostki">
+      Identyfikator jednostki *
+      <input
+        id="id_jednostki"
+        name="id_jednostki"
+        type="text"
+        maxlength="20"
+        required
+        placeholder="np. JW-2001"
+        value="{{ dane.get('id_jednostki', '') }}"
+      >
+    </label>
+
+    <label for="nazwa">
+      Nazwa jednostki *
+      <input
+        id="nazwa"
+        name="nazwa"
+        type="text"
+        maxlength="200"
+        required
+        placeholder="np. Batalion Łączności"
+        value="{{ dane.get('nazwa', '') }}"
+      >
+    </label>
+
+    <label for="miejscowosc">
+      Miejscowość *
+      <input
+        id="miejscowosc"
+        name="miejscowosc"
+        type="text"
+        maxlength="100"
+        required
+        placeholder="np. Kraków"
+        value="{{ dane.get('miejscowosc', '') }}"
+      >
+    </label>
+
+    <button type="submit">
+      Zarejestruj jednostkę
+    </button>
+  </form>
+</article>
+
+<h3>Zarejestrowane jednostki wojskowe</h3>
+
+{% if jednostki %}
+<div class="overflow-auto">
+  <table>
+    <thead>
+      <tr>
+        <th>Identyfikator</th>
+        <th>Nazwa jednostki</th>
+        <th>Miejscowość</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for jednostka in jednostki %}
+      <tr>
+        <td>{{ jednostka.id_jednostki }}</td>
+        <td>{{ jednostka.nazwa }}</td>
+        <td>{{ jednostka.miejscowosc }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<p>Brak zarejestrowanych jednostek wojskowych.</p>
+{% endif %}
+
+{% endblock %}
