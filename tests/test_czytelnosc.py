@@ -4,26 +4,25 @@ Kontrolery i lokalny broker działają bez zewnętrznego I/O. To test integracji
 logiki i renderowania HTML; nie zastępuje testu HTTP ani silnika przeglądarki.
 """
 
+import re
 from html.parser import HTMLParser
 
 import pytest
+from fastapi.testclient import TestClient
 from pomoc_brokera import BrokerTestowy
+from pomoc_sesji import zaloguj_z_csrf
 from test_oferty_transportu import nowy_wniosek, rekomendowane, request_form, zakoncz
 
+from kwatermistrz.api.main import app, get_broker
 from kwatermistrz.api.zatwierdzenia import decyzja_zbiorcza
 from kwatermistrz.db import sesja
 from kwatermistrz.models import Delegacja, Jednostka, Status, Zolnierz
 from kwatermistrz.podroze import WyborPodrozy
 from kwatermistrz.web.strony import (
     dane_wniosku,
-    podsumowanie_wniosku,
     przyjmij_wybor,
     strona,
     widok_podrozy,
-    zloz_nowy_wniosek,
-)
-from kwatermistrz.web.strony import (
-    nowy_wniosek as formularz,
 )
 
 
@@ -58,6 +57,16 @@ class WidocznyTekst(HTMLParser):
 
     def __str__(self):
         return " ".join(x for x in self.tekst if x)
+
+
+@pytest.fixture
+def klient_http():
+    broker = BrokerTestowy()
+    app.dependency_overrides[get_broker] = lambda: broker
+    with TestClient(app, follow_redirects=False) as klient:
+        zaloguj_z_csrf(klient, "ZOL-003")
+        yield klient, broker
+    app.dependency_overrides.clear()
 
 
 @pytest.mark.parametrize(
@@ -98,18 +107,15 @@ def test_blad_zastepuje_komunikat_stanu_i_zachowuje_wpisane_dane():
     assert html.count('role="alert"') == 1
 
 
-def test_formularz_powrot_z_podsumowania_zachowuje_miasto_transport_i_wyszukiwanie():
-    request = request_form()[0]
-    with sesja() as s:
-        osoba = s.get(Zolnierz, "ZOL-003")
-        html = formularz(request, s, osoba).body.decode()
-        assert 'id="miejsce-docelowe"' in html and 'hx-get="/app/miejscowosci"' in html
-        assert "Pojazd z jednostki" in html
-        dane = pola_wniosku() | {"miejsce_docelowe": "Bydgoszcz", "srodek_transportu": "pojazd służbowy"}
-        response = podsumowanie_wniosku(request, popraw=True, s=s, uzytkownik=osoba, **dane)
-        html = response.body.decode()
-        assert 'value="Bydgoszcz"' in html
-        assert 'value="pojazd służbowy" selected' in html
+def test_formularz_powrot_z_podsumowania_zachowuje_miasto_transport_i_wyszukiwanie(klient_http):
+    klient, _ = klient_http
+    html = klient.get("/app/wnioski/nowy").text
+    assert 'id="miejsce-docelowe"' in html and 'hx-get="/app/miejscowosci"' in html
+    assert "Pojazd z jednostki" in html
+    dane = pola_wniosku() | {"miejsce_docelowe": "Bydgoszcz", "srodek_transportu": "pojazd służbowy"}
+    html = klient.post("/app/wnioski/nowy/podsumowanie?popraw=1", data=dane).text
+    assert 'value="Bydgoszcz"' in html
+    assert 'value="pojazd służbowy" selected' in html
 
 
 def pola_wniosku():
@@ -128,16 +134,15 @@ def pola_wniosku():
     )
 
 
-def test_podsumowanie_zlozenie_zatwierdzenie_budzet_i_wybor_po_scaleniu_main():
-    broker = BrokerTestowy()
-    request = request_form()[0]
+def test_podsumowanie_zlozenie_zatwierdzenie_budzet_i_wybor_po_scaleniu_main(klient_http):
+    klient, broker = klient_http
     pola = pola_wniosku()
-    with sesja() as s:
-        osoba = s.get(Zolnierz, "ZOL-003")
-        html = podsumowanie_wniosku(request, popraw=False, s=s, uzytkownik=osoba, **pola).body.decode()
-        assert "Podsumowanie wniosku" in html and "Złóż wniosek" in html
-        odpowiedz = zakoncz(zloz_nowy_wniosek(s=s, broker=broker, uzytkownik=osoba, **pola))
-        ident = odpowiedz.headers["location"].rsplit("/", 1)[-1]
+    html = klient.post("/app/wnioski/nowy/podsumowanie", data=pola).text
+    assert "Podsumowanie wniosku" in html and "Złóż wniosek" in html
+    klucz = re.search(r'name="klucz_idempotencji" value="([a-f0-9]+)"', html)[1]
+    odpowiedz = klient.post("/app/wnioski/nowy", data={**pola, "klucz_idempotencji": klucz})
+    ident = odpowiedz.headers["location"].rsplit("/", 1)[-1]
+    request = request_form()[0]
     with sesja() as s:
         assert s.get(Delegacja, ident).status == Status.W_AKCEPTACJI
         wynik = zakoncz(decyzja_zbiorcza(s, broker, s.get(Zolnierz, "ZOL-001"), [ident], "Zgoda"))

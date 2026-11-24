@@ -98,6 +98,34 @@ def test_blad_finalnego_zapisu_pokazuje_ponowienie_i_zachowuje_dane(klient, brok
     assert liczba_delegacji() == 1 and len(broker.wyslane) == 1
 
 
+def test_konflikt_klucza_w_html_pokazuje_ekran_aplikacji_i_zachowuje_dane(klient, broker):
+    podsumowanie = klient.post("/app/wnioski/nowy/podsumowanie", data=WNIOSEK).text
+    stary_klucz = re.search(r'name="klucz_idempotencji" value="([a-f0-9]+)"', podsumowanie)[1]
+    assert klient.post("/app/wnioski/nowy", data={**WNIOSEK, "klucz_idempotencji": stary_klucz}).status_code == 303
+
+    zmienione = {**WNIOSEK, "miejsce_docelowe": "Gdynia", "klucz_idempotencji": stary_klucz}
+    konflikt = klient.post("/app/wnioski/nowy", data=zmienione)
+
+    assert konflikt.status_code == 409
+    assert konflikt.headers["content-type"].startswith("text/html")
+    assert 'role="alert"' in konflikt.text and "Nie można ponowić złożenia z tym samym kluczem" in konflikt.text
+    assert "nową wersję roboczą" in konflikt.text
+    assert 'value="Gdynia"' in konflikt.text
+    assert f'name="csrf" value="{klient.headers["X-CSRF-Token"]}"' in konflikt.text
+    nowy_klucz = re.search(r'name="klucz_idempotencji" value="([a-f0-9]+)"', konflikt.text)[1]
+    assert nowy_klucz != stary_klucz
+
+    wznowienie = klient.get("/app/wnioski/nowy").text
+    assert 'value="Gdynia"' in wznowienie and f'value="{nowy_klucz}"' in wznowienie
+    assert liczba_delegacji() == 1 and len(broker.wyslane) == 1
+
+
+def test_html_odrzuca_klucz_dluzszy_niz_kolumna_bazy(klient, broker):
+    r = klient.post("/app/wnioski/nowy", data={**WNIOSEK, "klucz_idempotencji": "x" * 65})
+    assert r.status_code == 422
+    assert liczba_delegacji() == 0 and broker.wyslane == []
+
+
 def test_niekompletne_dane_wracaja_do_formularza_z_bledami(klient):
     dane = {**WNIOSEK, "cel_wyjazdu": "", "data_powrotu": "2026-12-01"}
     strona = klient.post("/app/wnioski/nowy/podsumowanie", data=dane).text

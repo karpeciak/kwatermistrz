@@ -491,7 +491,7 @@ def nowy_wniosek(request: Request, s: Session = Depends(get_sesja), uzytkownik: 
 
 @router.post("/wnioski/nowy")
 async def zloz_nowy_wniosek(
-    request: Request = None,
+    request: Request,
     id_przedsiewziecia: str = Form(""),
     cel_wyjazdu: str = Form(""),
     miejsce_docelowe: str = Form(""),
@@ -508,7 +508,6 @@ async def zloz_nowy_wniosek(
     broker: Broker = Depends(get_broker),
     uzytkownik: Zolnierz = Depends(biezacy_uzytkownik),
 ):
-    klucz_idempotencji = klucz_idempotencji if isinstance(klucz_idempotencji, str) else ""
     przedsiewziecie = s.get(Przedsiewziecie, id_przedsiewziecia) if id_przedsiewziecia else None
     if przedsiewziecie:
         # puste pola uzupełniamy danymi wybranego przedsięwzięcia
@@ -532,28 +531,72 @@ async def zloz_nowy_wniosek(
     klucz_idempotencji = klucz_idempotencji or uuid4().hex
     try:
         d = await zarejestruj_wniosek(s, broker, wniosek, klucz_idempotencji)
-    except OperationalError:
+    except HTTPException as exc:
+        if exc.status_code != 409:
+            raise
         s.rollback()
-        w = {
-            "id_przedsiewziecia": wniosek.id_przedsiewziecia or "",
-            **wniosek.model_dump(exclude={"id_zolnierza", "id_przedsiewziecia"}),
-        }
-        liczba_dni = (parsuj_date(w["data_powrotu"]) - parsuj_date(w["data_wyjazdu"])).days + 1
-        odpowiedz = strona(
+        w = dane_wniosku_do_podsumowania(wniosek)
+        klucz_idempotencji = uuid4().hex
+        robocza = zapisz_wersje_robocza(s, uzytkownik.id_zolnierza, w, "podsumowanie")
+        robocza.klucz_idempotencji = klucz_idempotencji
+        s.commit()
+        return odpowiedz_bledu_zapisu(
             request,
             s,
-            "podsumowanie_wniosku.html",
             uzytkownik,
-            w=w,
-            jednostka=s.get(Jednostka, uzytkownik.id_jednostki),
-            przedsiewziecie=przedsiewziecie,
-            liczba_dni=liczba_dni,
-            klucz_idempotencji=klucz_idempotencji,
-            blad_zapisu=True,
+            w,
+            przedsiewziecie,
+            klucz_idempotencji,
+            status_code=409,
+            konflikt_klucza=True,
         )
-        odpowiedz.status_code = 503
-        return odpowiedz
+    except OperationalError:
+        s.rollback()
+        return odpowiedz_bledu_zapisu(
+            request,
+            s,
+            uzytkownik,
+            dane_wniosku_do_podsumowania(wniosek),
+            przedsiewziecie,
+            klucz_idempotencji,
+            status_code=503,
+        )
     return RedirectResponse(f"/app/wnioski/{d.id_delegacji}", status_code=303)
+
+
+def dane_wniosku_do_podsumowania(wniosek: WniosekIn) -> dict:
+    return {
+        "id_przedsiewziecia": wniosek.id_przedsiewziecia or "",
+        **wniosek.model_dump(exclude={"id_zolnierza", "id_przedsiewziecia"}),
+    }
+
+
+def odpowiedz_bledu_zapisu(
+    request: Request,
+    s: Session,
+    uzytkownik: Zolnierz,
+    w: dict,
+    przedsiewziecie: Przedsiewziecie | None,
+    klucz_idempotencji: str,
+    status_code: int,
+    konflikt_klucza: bool = False,
+) -> HTMLResponse:
+    liczba_dni = (parsuj_date(w["data_powrotu"]) - parsuj_date(w["data_wyjazdu"])).days + 1
+    odpowiedz = strona(
+        request,
+        s,
+        "podsumowanie_wniosku.html",
+        uzytkownik,
+        w=w,
+        jednostka=s.get(Jednostka, uzytkownik.id_jednostki),
+        przedsiewziecie=przedsiewziecie,
+        liczba_dni=liczba_dni,
+        klucz_idempotencji=klucz_idempotencji,
+        blad_zapisu=True,
+        konflikt_klucza=konflikt_klucza,
+    )
+    odpowiedz.status_code = status_code
+    return odpowiedz
 
 
 def dane_pojazdu(srodek_transportu: str, nr_rejestracyjny: str, pojemnosc_silnika: str) -> dict[str, str]:
@@ -584,7 +627,6 @@ def podsumowanie_wniosku(
     uzytkownik: Zolnierz = Depends(biezacy_uzytkownik),
 ):
     """S22IT1S0P2-52: sprawdzenie kompletności i podsumowanie przed złożeniem – wniosek nie jest jeszcze zapisywany."""
-    klucz_idempotencji = klucz_idempotencji if isinstance(klucz_idempotencji, str) else ""
     p = s.get(Przedsiewziecie, id_przedsiewziecia) if id_przedsiewziecia else None
     w = {
         "id_przedsiewziecia": p.id_przedsiewziecia if p else "",
