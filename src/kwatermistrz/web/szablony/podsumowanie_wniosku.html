@@ -5,7 +5,14 @@
 {# S22IT1S0P2-52: krok 2 – podsumowanie przed złożeniem (dane już sprawdzone pod względem kompletności) #}
 <p><small>Krok 2 z 2: sprawdź dane i złóż wniosek</small></p>
 
+{% if blad_zapisu %}
+<div class="bledy" role="alert">
+  <strong>Nie udało się bezpiecznie zapisać wniosku.</strong>
+  <p>Sprawdź połączenie i spróbuj ponownie. Dane pozostały w wersji roboczej, więc możesz też wrócić do nich później.</p>
+</div>
+{% else %}
 <p class="komunikat" role="status">Dane są kompletne. Sprawdź je – po złożeniu wniosek trafi do przełożonego.</p>
+{% endif %}
 
 <article>
   <header><strong>Wnioskodawca</strong></header>
@@ -31,6 +38,7 @@
 
 <form method="post" action="/app/wnioski/nowy">
   <input type="hidden" name="csrf" value="{{ csrf }}">
+  <input type="hidden" name="klucz_idempotencji" value="{{ klucz_idempotencji }}">
   {% for nazwa in ("id_przedsiewziecia", "cel_wyjazdu", "miejsce_docelowe", "data_wyjazdu", "data_powrotu",
                    "podstawa_numer_rozkazu", "podstawa_data_rozkazu", "srodek_transportu") %}
   <input type="hidden" name="{{ nazwa }}" value="{{ w.get(nazwa) or '' }}">
@@ -40,8 +48,9 @@
   {% endfor %}
   {% if w.potrzeba_zakwaterowania %}<input type="hidden" name="potrzeba_zakwaterowania" value="true">{% endif %}
   <div class="przyciski-formularza">
-    <button type="submit">Złóż wniosek</button>
+    <button type="submit">{{ "Spróbuj ponownie" if blad_zapisu else "Złóż wniosek" }}</button>
     <button type="submit" class="secondary outline" formaction="/app/wnioski/nowy/podsumowanie?popraw=1">Popraw dane</button>
+    {% if blad_zapisu %}<a href="/app/pulpit" role="button" class="secondary outline">Dokończ później</a>{% endif %}
   </div>
 </form>
 {% endblock %}

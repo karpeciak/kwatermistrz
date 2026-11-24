@@ -35,6 +35,7 @@
 
 <form method="post" action="/app/wnioski/nowy/podsumowanie" id="formularz-wniosku">
   <input type="hidden" name="csrf" value="{{ csrf }}">
+  {% if klucz_idempotencji %}<input type="hidden" name="klucz_idempotencji" value="{{ klucz_idempotencji }}">{% endif %}
   <fieldset>
     <legend><strong>Wnioskodawca</strong> <small>(dane z ewidencji)</small></legend>
     <p>{{ uzytkownik.stopien }} {{ uzytkownik.imie_nazwisko }}
