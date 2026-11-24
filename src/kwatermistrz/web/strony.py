@@ -22,6 +22,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import ValidationError
 from sqlalchemy import func, select
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from ..agents.koordynator import brakujace_elementy_organizacji
@@ -476,11 +477,21 @@ def nowy_wniosek(request: Request, s: Session = Depends(get_sesja), uzytkownik: 
     robocza = wersja_robocza(s, uzytkownik.id_zolnierza)  # S22IT1S0P2-80: wznowienie
     kontekst = dict(przedsiewziecia=przedsiewziecia, jednostka=jednostka, robocza=robocza)
     w = robocza.dane_wniosku if robocza else None
-    return strona(request, s, "nowy_wniosek.html", uzytkownik, **kontekst, w=w)
+    klucz_idempotencji = robocza.klucz_idempotencji if robocza else ""
+    return strona(
+        request,
+        s,
+        "nowy_wniosek.html",
+        uzytkownik,
+        **kontekst,
+        w=w,
+        klucz_idempotencji=klucz_idempotencji,
+    )
 
 
 @router.post("/wnioski/nowy")
 async def zloz_nowy_wniosek(
+    request: Request,
     id_przedsiewziecia: str = Form(""),
     cel_wyjazdu: str = Form(""),
     miejsce_docelowe: str = Form(""),
@@ -492,6 +503,7 @@ async def zloz_nowy_wniosek(
     potrzeba_zakwaterowania: bool = Form(False),
     nr_rejestracyjny: str = Form(""),
     pojemnosc_silnika: str = Form(""),
+    klucz_idempotencji: str = Form("", max_length=64),
     s: Session = Depends(get_sesja),
     broker: Broker = Depends(get_broker),
     uzytkownik: Zolnierz = Depends(biezacy_uzytkownik),
@@ -516,8 +528,75 @@ async def zloz_nowy_wniosek(
         podstawa_numer_rozkazu=podstawa_numer_rozkazu or None,
         podstawa_data_rozkazu=podstawa_data_rozkazu or None,
     )
-    d = await zarejestruj_wniosek(s, broker, wniosek)
+    klucz_idempotencji = klucz_idempotencji or uuid4().hex
+    try:
+        d = await zarejestruj_wniosek(s, broker, wniosek, klucz_idempotencji)
+    except HTTPException as exc:
+        if exc.status_code != 409:
+            raise
+        s.rollback()
+        w = dane_wniosku_do_podsumowania(wniosek)
+        klucz_idempotencji = uuid4().hex
+        robocza = zapisz_wersje_robocza(s, uzytkownik.id_zolnierza, w, "podsumowanie")
+        robocza.klucz_idempotencji = klucz_idempotencji
+        s.commit()
+        return odpowiedz_bledu_zapisu(
+            request,
+            s,
+            uzytkownik,
+            w,
+            przedsiewziecie,
+            klucz_idempotencji,
+            status_code=409,
+            konflikt_klucza=True,
+        )
+    except OperationalError:
+        s.rollback()
+        return odpowiedz_bledu_zapisu(
+            request,
+            s,
+            uzytkownik,
+            dane_wniosku_do_podsumowania(wniosek),
+            przedsiewziecie,
+            klucz_idempotencji,
+            status_code=503,
+        )
     return RedirectResponse(f"/app/wnioski/{d.id_delegacji}", status_code=303)
+
+
+def dane_wniosku_do_podsumowania(wniosek: WniosekIn) -> dict:
+    return {
+        "id_przedsiewziecia": wniosek.id_przedsiewziecia or "",
+        **wniosek.model_dump(exclude={"id_zolnierza", "id_przedsiewziecia"}),
+    }
+
+
+def odpowiedz_bledu_zapisu(
+    request: Request,
+    s: Session,
+    uzytkownik: Zolnierz,
+    w: dict,
+    przedsiewziecie: Przedsiewziecie | None,
+    klucz_idempotencji: str,
+    status_code: int,
+    konflikt_klucza: bool = False,
+) -> HTMLResponse:
+    liczba_dni = (parsuj_date(w["data_powrotu"]) - parsuj_date(w["data_wyjazdu"])).days + 1
+    odpowiedz = strona(
+        request,
+        s,
+        "podsumowanie_wniosku.html",
+        uzytkownik,
+        w=w,
+        jednostka=s.get(Jednostka, uzytkownik.id_jednostki),
+        przedsiewziecie=przedsiewziecie,
+        liczba_dni=liczba_dni,
+        klucz_idempotencji=klucz_idempotencji,
+        blad_zapisu=True,
+        konflikt_klucza=konflikt_klucza,
+    )
+    odpowiedz.status_code = status_code
+    return odpowiedz
 
 
 def dane_pojazdu(srodek_transportu: str, nr_rejestracyjny: str, pojemnosc_silnika: str) -> dict[str, str]:
@@ -543,6 +622,7 @@ def podsumowanie_wniosku(
     potrzeba_zakwaterowania: bool = Form(False),
     nr_rejestracyjny: str = Form(""),
     pojemnosc_silnika: str = Form(""),
+    klucz_idempotencji: str = Form("", max_length=64),
     s: Session = Depends(get_sesja),
     uzytkownik: Zolnierz = Depends(biezacy_uzytkownik),
 ):
@@ -563,15 +643,32 @@ def podsumowanie_wniosku(
     jednostka = s.get(Jednostka, uzytkownik.id_jednostki)
     bledy = [] if popraw else waliduj_wniosek(w, jednostka=uzytkownik.id_jednostki, wymagaj_podstawy=True)
     etap = etap_przygotowania(w) if popraw or bledy else "podsumowanie"
-    zapisz_wersje_robocza(s, uzytkownik.id_zolnierza, w, etap)  # S22IT1S0P2-37
+    robocza = zapisz_wersje_robocza(s, uzytkownik.id_zolnierza, w, etap)  # S22IT1S0P2-37
+    if robocza.klucz_idempotencji is None:
+        robocza.klucz_idempotencji = klucz_idempotencji or uuid4().hex
+        s.commit()
+    klucz_idempotencji = robocza.klucz_idempotencji
     if popraw or bledy:
         # scenariusz 3a–4a: wskazanie brakujących lub błędnych danych, formularz z wpisanymi już wartościami
         przedsiewziecia = s.scalars(select(Przedsiewziecie).order_by(Przedsiewziecie.data_rozpoczecia)).all()
         bledy_pol = {b.pole: b.komunikat for b in bledy}
-        kontekst = dict(przedsiewziecia=przedsiewziecia, jednostka=jednostka, w=w, bledy=bledy, bledy_pol=bledy_pol)
+        kontekst = dict(
+            przedsiewziecia=przedsiewziecia,
+            jednostka=jednostka,
+            w=w,
+            bledy=bledy,
+            bledy_pol=bledy_pol,
+            klucz_idempotencji=klucz_idempotencji,
+        )
         return strona(request, s, "nowy_wniosek.html", uzytkownik, **kontekst)
     liczba_dni = (parsuj_date(w["data_powrotu"]) - parsuj_date(w["data_wyjazdu"])).days + 1
-    kontekst = dict(w=w, jednostka=jednostka, przedsiewziecie=p, liczba_dni=liczba_dni)
+    kontekst = dict(
+        w=w,
+        jednostka=jednostka,
+        przedsiewziecie=p,
+        liczba_dni=liczba_dni,
+        klucz_idempotencji=klucz_idempotencji,
+    )
     return strona(request, s, "podsumowanie_wniosku.html", uzytkownik, **kontekst)
 
 

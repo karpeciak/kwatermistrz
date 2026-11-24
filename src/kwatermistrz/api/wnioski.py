@@ -16,6 +16,7 @@ from typing import Literal
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..db import teraz
@@ -26,14 +27,48 @@ from .zaleznosci import get_broker, get_sesja, pobierz_delegacje
 
 router = APIRouter(tags=["Wnioski"])
 
+OGRANICZENIE_KLUCZA_IDEMPOTENCJI = "delegacja_klucz_idempotencji_key"
+
+
+def _zlozony_wniosek_po_kluczu(s: Session, klucz: str) -> Delegacja | None:
+    return s.scalar(
+        select(Delegacja).where(
+            Delegacja.klucz_idempotencji == klucz,
+            Delegacja.status != Status.ROBOCZY,
+        )
+    )
+
+
+def _ten_sam_wniosek(d: Delegacja, wniosek: WniosekIn) -> bool:
+    return (
+        d.id_zolnierza == wniosek.id_zolnierza
+        and d.id_przedsiewziecia == wniosek.id_przedsiewziecia
+        and d.dane_wniosku == wniosek.model_dump(exclude={"id_zolnierza", "id_przedsiewziecia"})
+    )
+
+
+def _zweryfikuj_ponowienie(d: Delegacja, wniosek: WniosekIn) -> Delegacja:
+    if not _ten_sam_wniosek(d, wniosek):
+        raise HTTPException(409, "Klucz idempotencji został już użyty z innymi danymi wniosku")
+    return d
+
+
+def _konflikt_klucza_idempotencji(exc: IntegrityError) -> bool:
+    """Rozpoznaje wyłącznie konflikt unikalnego klucza w SQLite i PostgreSQL."""
+    diagnostyka = getattr(exc.orig, "diag", None)
+    nazwa_ograniczenia = getattr(diagnostyka, "constraint_name", None)
+    if nazwa_ograniczenia == OGRANICZENIE_KLUCZA_IDEMPOTENCJI:
+        return True
+    return "UNIQUE constraint failed: delegacja.klucz_idempotencji" in str(exc.orig)
+
 
 async def zarejestruj_wniosek(s: Session, broker: Broker, wniosek: WniosekIn, klucz: str | None = None) -> Delegacja:
     """Rejestruje złożony wniosek i przekazuje go agentom – wspólne dla API i interfejsu (`web/`)."""
     # S22IT1S0P2-22: ponowienie po utracie połączenia nie tworzy drugiego wniosku
     if klucz:
-        istniejaca = s.scalar(select(Delegacja).where(Delegacja.klucz_idempotencji == klucz))
+        istniejaca = _zlozony_wniosek_po_kluczu(s, klucz)
         if istniejaca:
-            return istniejaca
+            return _zweryfikuj_ponowienie(istniejaca, wniosek)
     if s.get(Zolnierz, wniosek.id_zolnierza) is None:
         raise HTTPException(404, f"Nie znaleziono żołnierza {wniosek.id_zolnierza}")
     if wniosek.id_przedsiewziecia and s.get(Przedsiewziecie, wniosek.id_przedsiewziecia) is None:
@@ -51,7 +86,16 @@ async def zarejestruj_wniosek(s: Session, broker: Broker, wniosek: WniosekIn, kl
         klucz_idempotencji=klucz,
     )
     s.add(d)
-    s.commit()
+    try:
+        s.commit()
+    except IntegrityError as exc:
+        if not klucz or not _konflikt_klucza_idempotencji(exc):
+            raise
+        s.rollback()
+        istniejaca = _zlozony_wniosek_po_kluczu(s, klucz)
+        if istniejaca is None:
+            raise
+        return _zweryfikuj_ponowienie(istniejaca, wniosek)
     await broker.publikuj(Komunikat(typ=Typ.WNIOSEK_ZLOZONY, id_delegacji=d.id_delegacji))
     return d
 
@@ -61,7 +105,7 @@ async def zloz_wniosek(
     wniosek: WniosekIn,
     s: Session = Depends(get_sesja),
     broker: Broker = Depends(get_broker),
-    idempotency_key: str | None = Header(None),
+    idempotency_key: str | None = Header(None, max_length=64),
 ):
     return await zarejestruj_wniosek(s, broker, wniosek, idempotency_key)
 

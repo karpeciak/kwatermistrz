@@ -1,9 +1,12 @@
 """Formularz wniosku o wyjazd (S22IT1S0P2-33, podzadanie S22IT1S0P2-52)."""
 
+import re
+
 import pytest
 from fastapi.testclient import TestClient
 from pomoc_sesji import zaloguj_z_csrf
 from sqlalchemy import func, select
+from sqlalchemy.exc import OperationalError
 
 from kwatermistrz.api.main import app, get_broker
 from kwatermistrz.db import sesja
@@ -48,6 +51,78 @@ def test_podsumowanie_przed_zlozeniem_nie_rejestruje_wniosku(klient, broker):
     strona = klient.post("/app/wnioski/nowy/podsumowanie", data=WNIOSEK).text
     assert "Podsumowanie wniosku" in strona and "Złóż wniosek" in strona
     assert "07.12.2026 – 11.12.2026" in strona and "5 dni" in strona and "Rozkaz dzienny nr 215/2026" in strona
+    assert liczba_delegacji() == 0 and broker.wyslane == []
+
+
+def test_podsumowanie_przenosi_stabilny_klucz_do_finalnego_zlozenia(klient, broker):
+    pierwsze = klient.post("/app/wnioski/nowy/podsumowanie", data=WNIOSEK).text
+    drugie = klient.post("/app/wnioski/nowy/podsumowanie", data=WNIOSEK).text
+    klucz_1 = re.search(r'name="klucz_idempotencji" value="([a-f0-9]+)"', pierwsze)[1]
+    klucz_2 = re.search(r'name="klucz_idempotencji" value="([a-f0-9]+)"', drugie)[1]
+    assert klucz_1 == klucz_2
+    assert f'name="klucz_idempotencji" value="{klucz_1}"' in klient.get("/app/wnioski/nowy").text
+
+    dane = {**WNIOSEK, "klucz_idempotencji": klucz_1}
+    pierwsza = klient.post("/app/wnioski/nowy", data=dane)
+    ponowiona = klient.post("/app/wnioski/nowy", data=dane)
+
+    assert pierwsza.status_code == ponowiona.status_code == 303
+    assert pierwsza.headers["location"] == ponowiona.headers["location"]
+    assert liczba_delegacji() == 1
+    assert len(broker.wyslane) == 1
+
+
+def test_blad_finalnego_zapisu_pokazuje_ponowienie_i_zachowuje_dane(klient, broker, monkeypatch):
+    podsumowanie = klient.post("/app/wnioski/nowy/podsumowanie", data=WNIOSEK).text
+    klucz = re.search(r'name="klucz_idempotencji" value="([a-f0-9]+)"', podsumowanie)[1]
+    from kwatermistrz.web import strony
+
+    prawdziwy_zapis = strony.zarejestruj_wniosek
+
+    async def przerwany_zapis(*args, **kwargs):
+        raise OperationalError("INSERT", {}, Exception("przerwane polaczenie"))
+
+    monkeypatch.setattr(strony, "zarejestruj_wniosek", przerwany_zapis)
+    r = klient.post("/app/wnioski/nowy", data={**WNIOSEK, "klucz_idempotencji": klucz})
+
+    assert r.status_code == 503
+    assert 'role="alert"' in r.text and "Nie udało się bezpiecznie zapisać wniosku" in r.text
+    assert 'value="Toruń"' in r.text and f'value="{klucz}"' in r.text
+    assert f'name="csrf" value="{klient.headers["X-CSRF-Token"]}"' in r.text
+    assert "Spróbuj ponownie" in r.text and "wersji roboczej" in r.text
+    assert liczba_delegacji() == 0 and broker.wyslane == []
+
+    monkeypatch.setattr(strony, "zarejestruj_wniosek", prawdziwy_zapis)
+    ponowienie = klient.post("/app/wnioski/nowy", data={**WNIOSEK, "klucz_idempotencji": klucz})
+    assert ponowienie.status_code == 303
+    assert liczba_delegacji() == 1 and len(broker.wyslane) == 1
+
+
+def test_konflikt_klucza_w_html_pokazuje_ekran_aplikacji_i_zachowuje_dane(klient, broker):
+    podsumowanie = klient.post("/app/wnioski/nowy/podsumowanie", data=WNIOSEK).text
+    stary_klucz = re.search(r'name="klucz_idempotencji" value="([a-f0-9]+)"', podsumowanie)[1]
+    assert klient.post("/app/wnioski/nowy", data={**WNIOSEK, "klucz_idempotencji": stary_klucz}).status_code == 303
+
+    zmienione = {**WNIOSEK, "miejsce_docelowe": "Gdynia", "klucz_idempotencji": stary_klucz}
+    konflikt = klient.post("/app/wnioski/nowy", data=zmienione)
+
+    assert konflikt.status_code == 409
+    assert konflikt.headers["content-type"].startswith("text/html")
+    assert 'role="alert"' in konflikt.text and "Nie można ponowić złożenia z tym samym kluczem" in konflikt.text
+    assert "nową wersję roboczą" in konflikt.text
+    assert 'value="Gdynia"' in konflikt.text
+    assert f'name="csrf" value="{klient.headers["X-CSRF-Token"]}"' in konflikt.text
+    nowy_klucz = re.search(r'name="klucz_idempotencji" value="([a-f0-9]+)"', konflikt.text)[1]
+    assert nowy_klucz != stary_klucz
+
+    wznowienie = klient.get("/app/wnioski/nowy").text
+    assert 'value="Gdynia"' in wznowienie and f'value="{nowy_klucz}"' in wznowienie
+    assert liczba_delegacji() == 1 and len(broker.wyslane) == 1
+
+
+def test_html_odrzuca_klucz_dluzszy_niz_kolumna_bazy(klient, broker):
+    r = klient.post("/app/wnioski/nowy", data={**WNIOSEK, "klucz_idempotencji": "x" * 65})
+    assert r.status_code == 422
     assert liczba_delegacji() == 0 and broker.wyslane == []
 
 
