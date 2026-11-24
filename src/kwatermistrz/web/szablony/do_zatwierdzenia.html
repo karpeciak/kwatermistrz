@@ -79,4 +79,28 @@
 {% else %}
 <article class="pusto"><p>Brak wniosków oczekujących na Twoją decyzję.</p></article>
 {% endif %}
+
+{# S22IT1S0P2-13: wnioski, które po upływie terminu przekazano osobie zastępującej przełożonego #}
+{% if przekazane_zastepcy %}
+<section aria-labelledby="przekazane-zastepcy">
+  <h3 id="przekazane-zastepcy">Przekazane osobie zastępującej</h3>
+  <p><small>Termin na Twoją decyzję minął, więc decyzję podejmuje osoba zastępująca. Otrzymasz informację o jej decyzji.</small></p>
+  <div class="overflow-auto">
+    <table>
+      <thead><tr><th>Wniosek</th><th>Wnioskodawca</th><th>Cel i miejsce</th><th>Decyduje</th></tr></thead>
+      <tbody>
+        {% for d in przekazane_zastepcy %}
+        {% set w = d.dane_wniosku %}
+        <tr>
+          <td class="bez-lamania"><a href="/app/wnioski/{{ d.id_delegacji }}">{{ d.id_delegacji }}</a></td>
+          <td>{{ wnioskodawcy[d.id_zolnierza] | osoba }}</td>
+          <td>{{ d.cel_wyjazdu or w.get("cel_wyjazdu") or "–" }}<br><small>{{ d.miejsce_docelowe or w.get("miejsce_docelowe") or "" }}</small></td>
+          <td>{{ wnioskodawcy.get(d.id_zatwierdzajacego) | osoba }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endif %}
 {% endblock %}

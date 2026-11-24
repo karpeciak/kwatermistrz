@@ -956,6 +956,24 @@ def dane_zatwierdzania(s: Session, uzytkownik: Zolnierz) -> dict:
         koszty={d.id_delegacji: koszt_delegacji(d) for d in wnioski},
         budzet=budzet_jednostki(s, uzytkownik),
         wstrzymane=wstrzymane_z_powodu_budzetu(s, [d.id_delegacji for d in wnioski]),
+        przekazane_zastepcy=przekazane_zastepcy(s, uzytkownik.id_zolnierza),
+    )
+
+
+def przekazane_zastepcy(s: Session, id_przelozonego: str) -> list[Delegacja]:
+    """S22IT1S0P2-13: wnioski podwładnych przekazane po terminie osobie zastępującej, jeszcze bez decyzji."""
+    return list(
+        s.scalars(
+            select(Delegacja)
+            .join(Zolnierz, Zolnierz.id_zolnierza == Delegacja.id_zolnierza)
+            .where(
+                Zolnierz.id_przelozonego == id_przelozonego,
+                Delegacja.przekazano_zastepcy.is_(True),
+                Delegacja.status == Status.W_AKCEPTACJI,
+                Delegacja.id_zatwierdzajacego != id_przelozonego,
+            )
+            .order_by(Delegacja.data_zmiany_statusu)
+        )
     )
 
 

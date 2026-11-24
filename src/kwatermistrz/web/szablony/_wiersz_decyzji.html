@@ -11,7 +11,12 @@
   <td>{{ d.cel_wyjazdu or w.get("cel_wyjazdu") or "–" }}<br><small>{{ d.miejsce_docelowe or w.get("miejsce_docelowe") or "" }}</small></td>
   <td><span class="bez-lamania">{{ w.get("data_wyjazdu") | data_pl }} – {{ w.get("data_powrotu") | data_pl }}</span></td>
   <td class="kwota">{% if koszt is defined and koszt is not none %}{{ koszt | kwota }}{% else %}<small>brak szacunku</small>{% endif %}</td>
-  <td>{{ d.data_zmiany_statusu | ile_czasu }}</td>
+  <td>{{ d.data_zmiany_statusu | ile_czasu }}
+    {# S22IT1S0P2-13: wniosek przekazany z zastępstwa albo po przypomnieniu; termin na decyzję #}
+    {% if d.przekazano_zastepcy %}<small class="przekazany">przekazany z zastępstwa – przełożony nie zdecydował w terminie</small>
+    {% elif d.liczba_przypomnien %}<small class="przekazany">po przypomnieniu</small>{% endif %}
+    {% if d.termin_decyzji %}<small class="bez-lamania">termin: {{ d.termin_decyzji | czas }}</small>{% endif %}
+  </td>
   <td class="kolumna-decyzji">
     {% if przekazano %}
     <span class="status {{ ('zatwierdzony' if przekazano == 'Zgoda' else 'odrzucony' if przekazano == 'Odmowa' else 'do uzupełnienia') | klasa_statusu }}">{{ przekazano }}</span>
