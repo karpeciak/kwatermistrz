@@ -69,7 +69,11 @@ class Koordynator(Agent):
         else:
             d.ustaw_status(Status.ODRZUCONY)
         ktx.opis = f"{d.status} – decyzja {k.dane['id_osoby']}"
-        ktx.wyslij(Typ.POWIADOMIENIE, {"do": d.id_zolnierza, "tresc": f"Wniosek {d.id_delegacji}: {d.status}"})
+        # S22IT1S0P2-13 (8a): przy odrzuceniu i zwrocie wnioskodawca dostaje też uzasadnienie decyzji
+        tresc = f"Wniosek {d.id_delegacji}: {d.status}"
+        if decyzja != "Zgoda" and d.uzasadnienie_decyzji:
+            tresc += f" – uzasadnienie: {d.uzasadnienie_decyzji}"
+        ktx.wyslij(Typ.POWIADOMIENIE, {"do": d.id_zolnierza, "tresc": tresc, "decyzja_osoby": k.dane["id_osoby"]})
 
     # ------------------------------------------------------------ organizacja wyjazdu
 

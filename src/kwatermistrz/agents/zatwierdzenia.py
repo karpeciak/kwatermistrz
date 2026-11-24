@@ -71,6 +71,15 @@ class AgentZatwierdzen(Agent):
         d.data_decyzji = teraz()
         d.uzasadnienie_decyzji = k.dane.get("uzasadnienie")
         ktx.opis = f"{d.decyzja} – {id_osoby}"
+        if d.przekazano_zastepcy:
+            # S22IT1S0P2-13 (krok 8): decyzję podjęła osoba zastępująca – informacja dla przełożonego,
+            # który nie zdążył jej podjąć w terminie (wnioskodawcę informuje Koordynator)
+            ktx.opis += " (osoba zastępująca)"
+            podwladny = s.get(Zolnierz, d.id_zolnierza)
+            przelozony = podwladny.id_przelozonego if podwladny else None
+            if przelozony and przelozony != id_osoby:
+                tresc = f"Wniosek {d.id_delegacji}: decyzja „{d.decyzja}” podjęta przez osobę zastępującą {id_osoby}"
+                ktx.wyslij(Typ.POWIADOMIENIE, {"do": przelozony, "tresc": tresc})
         if d.decyzja == "Zgoda":
             # S22IT1S0P2-35: zatwierdzony wyjazd angażuje budżet delegacji jednostki wnioskodawcy
             koszt = Decimal(k.dane["koszt"]) if k.dane.get("koszt") else d.szacowany_koszt

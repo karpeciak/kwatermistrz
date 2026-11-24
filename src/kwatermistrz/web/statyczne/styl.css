@@ -66,6 +66,7 @@ dl.podsumowanie dd { margin: 0; }
 .budzet .komunikat { margin: 1rem 0 0; }
 td.kwota { white-space: nowrap; text-align: right; }
 .wstrzymany { display: block; margin-bottom: 0.4rem; color: #b45309; font-weight: 600; }
+.przekazany { display: block; color: #78350f; font-weight: 600; } /* S22IT1S0P2-13 */
 fieldset.decyzja-zbiorcza { margin-top: 1rem; padding: 1rem; border: 1px solid var(--pico-muted-border-color);
   border-radius: var(--pico-border-radius); }
 fieldset.decyzja-zbiorcza .przyciski { display: flex; flex-wrap: wrap; gap: 0.5rem; }

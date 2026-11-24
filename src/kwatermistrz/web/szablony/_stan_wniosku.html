@@ -62,7 +62,12 @@
       <ul>{% for b in bledy %}<li>{{ b }}</li>{% endfor %}</ul>
     </div>
     {% endif %}
-    {% if d.uzasadnienie_decyzji %}
+    {# S22IT1S0P2-13: decyzja ze wskazaniem osoby, która ją podjęła (także osoby zastępującej) #}
+    {% if d.decyzja %}
+    <p><small>Decyzja{% if d.przekazano_zastepcy %} osoby zastępującej{% else %} przełożonego{% endif %}</small><br>
+      <strong>{{ d.decyzja }}</strong>{% if zatwierdzajacy %} – {{ zatwierdzajacy | osoba }}{% endif %}{% if d.data_decyzji %}, {{ d.data_decyzji | czas }}{% endif %}
+      {% if d.uzasadnienie_decyzji %}<br>Uzasadnienie: {{ d.uzasadnienie_decyzji }}{% endif %}</p>
+    {% elif d.uzasadnienie_decyzji %}
     <p><small>Uzasadnienie decyzji przełożonego</small><br>{{ d.uzasadnienie_decyzji }}</p>
     {% endif %}
   </article>
