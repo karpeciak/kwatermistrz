@@ -229,6 +229,18 @@ def wykonaj_kontrole(broker, id_delegacji: str = "DEL-SYNC"):
     )
 
 
+def wykonaj_cykle(broker, ile: int = 3) -> None:
+    koordynator = Koordynator(broker)
+    for _ in range(ile):
+        for komunikat, funkcja, operacja in koordynator.zadania_cykliczne():
+            asyncio.run(koordynator.wykonaj(komunikat, funkcja, operacja))
+
+
+def liczba_operacji(id_delegacji: str) -> int:
+    with sesja() as s:
+        return s.scalar(select(func.count()).select_from(LogOperacji).where(LogOperacji.id_delegacji == id_delegacji))
+
+
 @pytest.mark.parametrize(
     ("status_przed", "status_po", "data_wyjazdu", "data_powrotu", "status_rozliczenia"),
     [
@@ -346,6 +358,36 @@ def test_identyczny_odcisk_nie_powtarza_powiadomien_a_zmieniony_stan_moze_eskalo
             )
             == 2
         )
+
+
+def test_cykl_nie_loguje_delegacji_bez_zmiany_i_bez_rozbieznosci(broker):
+    id_d = utworz_delegacje(Status.ZATWIERDZONY)
+
+    wykonaj_cykle(broker)
+
+    assert liczba_operacji(id_d) == 0
+
+
+def test_cykl_loguje_i_eskaluje_nowa_rozbieznosc_tylko_raz(broker):
+    id_d = utworz_delegacje(Status.ZORGANIZOWANY)
+
+    wykonaj_cykle(broker)
+
+    assert liczba_operacji(id_d) == 1
+    powiadomienia = [k for k in broker.wyslane if k.typ == Typ.POWIADOMIENIE]
+    assert [k.dane["do"] for k in powiadomienia] == ["ZOL-001", "ZOL-003"]
+
+
+@pytest.mark.parametrize("status", [Status.ODRZUCONY, Status.ROZLICZONY])
+def test_cykl_pomija_statusy_koncowe_nawet_gdy_fakty_sa_sprzeczne(broker, status):
+    id_d = utworz_delegacje(status)
+    if status == Status.ODRZUCONY:
+        with sesja() as s:
+            s.add(PolecenieWyjazdu(numer="PW/KONCOWY", id_delegacji=id_d, wersja_wzoru="2026-1", tresc={}))
+
+    wykonaj_cykle(broker)
+
+    assert liczba_operacji(id_d) == 0
 
 
 # ---------------------------------------------------------------- zgłoszenie w interfejsie

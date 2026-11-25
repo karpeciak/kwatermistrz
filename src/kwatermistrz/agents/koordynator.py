@@ -277,16 +277,27 @@ class Koordynator(Agent):
     # ------------------------------------------------------------ realizacja i rozliczenie
 
     def zadania_cykliczne(self):
+        zadania = []
         with sesja() as s:
-            ids = s.scalars(select(Delegacja.id_delegacji).where(Delegacja.status != Status.ROBOCZY)).all()
-        return [
-            (
-                Komunikat(typ=KONTROLA_STATUSU, id_delegacji=i),
-                self.synchronizuj_status,
-                "Synchronizacja statusu delegacji",
-            )
-            for i in ids
-        ]
+            delegacje = s.scalars(
+                select(Delegacja).where(Delegacja.status.not_in({Status.ROBOCZY, Status.ODRZUCONY, Status.ROZLICZONY}))
+            ).all()
+            dzis = teraz().date()
+            for d in delegacje:
+                fakty = pobierz_fakty_statusu(s, d)
+                wynik = kwalifikuj_status(fakty, dzis)
+                nowa_rozbieznosc = wynik.rozbieznosc and not rozbieznosc_juz_zgloszona(
+                    s, d.id_delegacji, odcisk_rozbieznosci(fakty, wynik.powod)
+                )
+                if wynik.nowy_status or nowa_rozbieznosc:
+                    zadania.append(
+                        (
+                            Komunikat(typ=KONTROLA_STATUSU, id_delegacji=d.id_delegacji),
+                            self.synchronizuj_status,
+                            "Synchronizacja statusu delegacji",
+                        )
+                    )
+        return zadania
 
     def przesun_wedlug_dat(self, s: Session, k: Komunikat, ktx: Kontekst) -> None:
         """Zgodność wsteczna dla istniejących wywołań kontroli dat."""
@@ -351,6 +362,7 @@ class Koordynator(Agent):
                 typ=DECYZJA_ROZBIEZNOSCI,
                 wybrany_wariant=odcisk,
                 uzasadnienie=opis,
+                # Flaga kieruje rozbieżność do weryfikacji człowieka; nie zmienia kwot ani danych rozliczenia.
                 decyzja_finansowa=True,
             )
         )

@@ -838,6 +838,7 @@ async def sprawdz_status_wniosku(
     if d is None or d.id_zolnierza != uzytkownik.id_zolnierza:
         raise HTTPException(404, "Nie znaleziono wniosku")
 
+    # Świadome odstępstwo wersji demonstracyjnej: proces web uruchamia Koordynatora bez kolejki RabbitMQ.
     koordynator = Koordynator(broker)
     rezultat = await koordynator.wykonaj(
         Komunikat(typ=KONTROLA_STATUSU, id_delegacji=id_delegacji),
