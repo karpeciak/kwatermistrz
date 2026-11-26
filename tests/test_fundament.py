@@ -264,17 +264,41 @@ def test_delegacja_zorganizowana_gdy_sa_polecenie_przejazd_i_nocleg(broker):
 
 def test_daty_przesuwaja_delegacje_w_trakcie_i_do_rozliczenia(broker):
     dzis = teraz().date()
-    trwa = utworz("DEL-F-T", status=Status.ZORGANIZOWANY, data_wyjazdu=dzis, data_powrotu=dzis + timedelta(days=2))
+    trwa = utworz(
+        "DEL-F-T",
+        status=Status.ZORGANIZOWANY,
+        data_wyjazdu=dzis,
+        data_powrotu=dzis + timedelta(days=2),
+        potrzeba_zakwaterowania=False,
+    )
     zakonczona = utworz(
         "DEL-F-Z",
         status=Status.ZORGANIZOWANY,
         data_wyjazdu=dzis - timedelta(days=5),
         data_powrotu=dzis - timedelta(days=1),
+        potrzeba_zakwaterowania=False,
     )
+    with sesja() as s:
+        for id_d in (trwa, zakonczona):
+            s.add(PolecenieWyjazdu(numer=f"PW/{id_d}", id_delegacji=id_d, wersja_wzoru="2026-1", tresc={}))
+            for kierunek in ("Tam", "Powrót"):
+                s.add(
+                    Przejazd(
+                        id_delegacji=id_d,
+                        kierunek=kierunek,
+                        srodek_transportu="kolej",
+                        data_przejazdu=dzis,
+                        status=StatusRezerwacji.WYBRANA,
+                    )
+                )
     koordynator = AGENCI["koordynator"](broker)
     for k, funkcja, operacja in koordynator.zadania_cykliczne():
         asyncio.run(koordynator.wykonaj(k, funkcja, operacja))
     assert status(trwa) == Status.W_TRAKCIE
+    assert status(zakonczona) == Status.W_TRAKCIE
+
+    for k, funkcja, operacja in koordynator.zadania_cykliczne():
+        asyncio.run(koordynator.wykonaj(k, funkcja, operacja))
     assert status(zakonczona) == Status.DO_ROZLICZENIA
 
 

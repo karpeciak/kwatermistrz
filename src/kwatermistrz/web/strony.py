@@ -25,7 +25,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
-from ..agents.koordynator import brakujace_elementy_organizacji
+from ..agents.koordynator import DECYZJA_SYNCHRONIZACJI, KONTROLA_STATUSU, Koordynator, brakujace_elementy_organizacji
 from ..api.organizacja import przyjmij_wariant, przyjmij_wybor
 from ..api.rozliczenia import (
     KOMUNIKAT_PRZYJETY,
@@ -58,7 +58,7 @@ from ..api.zatwierdzenia import (
 )
 from ..config import settings
 from ..db import teraz
-from ..messaging import Broker
+from ..messaging import Broker, Komunikat
 from ..miejscowosci import BladMiejscowosci, ZrodloNiedostepne, szukaj_miejscowosci
 from ..models import (
     Agent,
@@ -892,10 +892,56 @@ def dane_wniosku(s: Session, id_delegacji: str, uzytkownik: Zolnierz) -> dict:
 def wniosek(
     id_delegacji: str,
     request: Request,
+    wynik: str | None = None,
     s: Session = Depends(get_sesja),
     uzytkownik: Zolnierz = Depends(biezacy_uzytkownik),
 ):
-    return strona(request, s, "wniosek.html", uzytkownik, **dane_wniosku(s, id_delegacji, uzytkownik))
+    komunikaty = {
+        "status-zmieniony": "Status został sprawdzony i bezpiecznie zaktualizowany.",
+        "status-sprawdzony": "Status został sprawdzony. Obecny stan jest zgodny z dostępnymi danymi.",
+        "wymaga-wyjasnienia": (
+            "Status wymaga wyjaśnienia przez człowieka; właściwe osoby zostały powiadomione, "
+            "a dane delegacji pozostały bez zmian."
+        ),
+        "blad-sprawdzenia": "Nie udało się sprawdzić statusu. Spróbuj ponownie lub skontaktuj się z obsługą.",
+    }
+    return strona(
+        request,
+        s,
+        "wniosek.html",
+        uzytkownik,
+        **dane_wniosku(s, id_delegacji, uzytkownik),
+        komunikat_statusu=komunikaty.get(wynik),
+    )
+
+
+@router.post("/wnioski/{id_delegacji}/sprawdz-status")
+async def sprawdz_status_wniosku(
+    id_delegacji: str,
+    s: Session = Depends(get_sesja),
+    broker: Broker = Depends(get_broker),
+    uzytkownik: Zolnierz = Depends(biezacy_uzytkownik),
+):
+    d = s.get(Delegacja, id_delegacji)
+    if d is None or d.id_zolnierza != uzytkownik.id_zolnierza:
+        raise HTTPException(404, "Nie znaleziono wniosku")
+
+    # Świadome odstępstwo wersji demonstracyjnej: proces web uruchamia Koordynatora bez kolejki RabbitMQ.
+    koordynator = Koordynator(broker)
+    rezultat = await koordynator.wykonaj(
+        Komunikat(typ=KONTROLA_STATUSU, id_delegacji=id_delegacji),
+        koordynator.synchronizuj_status,
+        "Synchronizacja statusu delegacji na zgłoszenie wnioskodawcy",
+    )
+    if rezultat.wynik == "Błąd":
+        wynik = "blad-sprawdzenia"
+    elif rezultat.wynik == "Ostrzeżenie":
+        wynik = "wymaga-wyjasnienia"
+    elif any(decyzja.typ == DECYZJA_SYNCHRONIZACJI for decyzja in rezultat.decyzje):
+        wynik = "status-zmieniony"
+    else:
+        wynik = "status-sprawdzony"
+    return RedirectResponse(f"/app/wnioski/{id_delegacji}?wynik={wynik}", status_code=303)
 
 
 @router.get("/wnioski/{id_delegacji}/stan", response_class=HTMLResponse)
@@ -907,7 +953,13 @@ def stan_wniosku(
 ):
     """Fragment strony odświeżany przez HTMX, dopóki agenci pracują nad wnioskiem."""
     return szablony.TemplateResponse(
-        request, "_stan_wniosku.html", {**dane_wniosku(s, id_delegacji, uzytkownik), "uzytkownik": uzytkownik}
+        request,
+        "_stan_wniosku.html",
+        {
+            **dane_wniosku(s, id_delegacji, uzytkownik),
+            "uzytkownik": uzytkownik,
+            "csrf": token_csrf(request.cookies.get(CIASTECZKO, ""), settings.session_secret.get_secret_value()),
+        },
     )
 
 

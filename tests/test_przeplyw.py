@@ -8,7 +8,15 @@ from sqlalchemy import select
 from kwatermistrz.agents import AGENCI
 from kwatermistrz.db import sesja, teraz
 from kwatermistrz.messaging import Komunikat, Typ
-from kwatermistrz.models import Delegacja, LogDecyzji, LogOperacji, Status
+from kwatermistrz.models import (
+    Delegacja,
+    LogDecyzji,
+    LogOperacji,
+    PolecenieWyjazdu,
+    Przejazd,
+    Status,
+    StatusRezerwacji,
+)
 
 WNIOSEK = {
     "cel_wyjazdu": "Szkolenie z logistyki wojskowej",
@@ -116,8 +124,20 @@ def test_po_dacie_powrotu_delegacja_przechodzi_do_rozliczenia_s32(broker):
         status=Status.ZORGANIZOWANY,
         data_wyjazdu=dzis - timedelta(days=5),
         data_powrotu=dzis - timedelta(days=1),
+        potrzeba_zakwaterowania=False,
     )
     with sesja() as s:
+        s.add(PolecenieWyjazdu(numer="PW/DEL-TEST-1", id_delegacji=id_d, wersja_wzoru="2026-1", tresc={}))
+        for kierunek in ("Tam", "Powrót"):
+            s.add(
+                Przejazd(
+                    id_delegacji=id_d,
+                    kierunek=kierunek,
+                    srodek_transportu="kolej",
+                    data_przejazdu=dzis,
+                    status=StatusRezerwacji.WYBRANA,
+                )
+            )
         # powrót dzisiaj – wyjazd jeszcze trwa
         s.add(
             Delegacja(
@@ -134,5 +154,11 @@ def test_po_dacie_powrotu_delegacja_przechodzi_do_rozliczenia_s32(broker):
     for k, funkcja, operacja in koordynator.zadania_cykliczne():
         asyncio.run(koordynator.wykonaj(k, funkcja, operacja))
 
-    assert delegacja(id_d).status == Status.DO_ROZLICZENIA
+    # Nowa synchronizacja wykonuje najwyżej jedno przejście na przebieg.
+    assert delegacja(id_d).status == Status.W_TRAKCIE
     assert delegacja("DEL-TEST-2").status == Status.W_TRAKCIE
+
+    for k, funkcja, operacja in koordynator.zadania_cykliczne():
+        asyncio.run(koordynator.wykonaj(k, funkcja, operacja))
+
+    assert delegacja(id_d).status == Status.DO_ROZLICZENIA
