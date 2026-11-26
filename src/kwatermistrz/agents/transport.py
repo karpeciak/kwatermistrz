@@ -25,14 +25,12 @@ from ..audit import Decyzja
 from ..messaging import Komunikat, Typ
 from ..models import (
     Delegacja,
-    Jednostka,
     LogDecyzji,
     LogOperacji,
     Polaczenie,
     Przejazd,
     Status,
     StatusRezerwacji,
-    Zolnierz,
 )
 from ..podroze import (
     BladPodrozy,
@@ -47,6 +45,7 @@ from ..podroze import (
     zestawienie,
     zgodny_transport,
 )
+from ..przynaleznosc import jednostka_delegacji
 from .base import Agent, BladProcesu, Kontekst, pobierz_delegacje
 
 
@@ -80,8 +79,7 @@ class AgentTransportu(Agent):
         if not d.data_wyjazdu or not d.data_powrotu or not d.miejsce_docelowe:
             ktx.ostrzezenie("S22IT1S0P2-27: uzupełnij daty i miejsce podróży")
             return
-        zolnierz = s.get(Zolnierz, d.id_zolnierza)
-        jednostka = s.get(Jednostka, zolnierz.id_jednostki) if zolnierz else None
+        jednostka = jednostka_delegacji(s, d)
         if jednostka is None:
             raise BladProcesu("Brak jednostki wnioskodawcy")
         deadline = termin(s, d)
@@ -251,8 +249,9 @@ class AgentTransportu(Agent):
             sprawdz_dodanie_wariantu(s, d)
         except (ValidationError, BladPodrozy) as e:
             raise BladProcesu(str(e)) from e
-        zolnierz = s.get(Zolnierz, d.id_zolnierza)
-        jednostka = s.get(Jednostka, zolnierz.id_jednostki)
+        jednostka = jednostka_delegacji(s, d)
+        if jednostka is None:
+            raise BladProcesu("Brak jednostki wnioskodawcy")
         skad, dokad = jednostka.miejscowosc, d.miejsce_docelowe
         data = d.data_wyjazdu
         if w.kierunek == "Powrót":

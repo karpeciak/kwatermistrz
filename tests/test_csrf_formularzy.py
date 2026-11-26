@@ -46,6 +46,7 @@ def token_z_html(tekst):
         "/app/wnioski/DEL-CSRF/rozliczenie/przekazanie",
         "/app/wnioski/DEL-CSRF/rozliczenie/akceptacja",
         "/app/wnioski/DEL-CSRF/zakwaterowanie",
+        "/app/zolnierze/ZOL-003/przynaleznosc",
     ],
 )
 def test_brak_tokena_blokuje_zapis_przed_skutkami_ubocznymi(klient, broker, url):

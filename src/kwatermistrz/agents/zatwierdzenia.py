@@ -11,7 +11,8 @@ from ..audit import Decyzja
 from ..config import settings
 from ..db import sesja, teraz
 from ..messaging import Komunikat, Typ
-from ..models import Delegacja, Jednostka, Status, Zolnierz
+from ..models import Delegacja, Status, Zolnierz
+from ..przynaleznosc import jednostka_delegacji
 from .base import Agent, BladProcesu, Kontekst, pobierz_delegacje
 
 KONTROLA_TERMINU = "cykl.termin_decyzji"
@@ -83,8 +84,7 @@ class AgentZatwierdzen(Agent):
         if d.decyzja == "Zgoda":
             # S22IT1S0P2-35: zatwierdzony wyjazd angażuje budżet delegacji jednostki wnioskodawcy
             koszt = Decimal(k.dane["koszt"]) if k.dane.get("koszt") else d.szacowany_koszt
-            wnioskodawca = s.get(Zolnierz, d.id_zolnierza)
-            jednostka = s.get(Jednostka, wnioskodawca.id_jednostki) if wnioskodawca else None
+            jednostka = jednostka_delegacji(s, d)
             if koszt and jednostka is not None:
                 jednostka.budzet_wykorzystany = (jednostka.budzet_wykorzystany or 0) + koszt
         ktx.wyslij(Typ.WYNIK_ZATWIERDZENIA, {"decyzja": d.decyzja, "id_osoby": id_osoby})

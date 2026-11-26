@@ -75,6 +75,20 @@ class Zolnierz(Base):
     id_zastepcy: Mapped[str | None] = mapped_column(ForeignKey("zolnierz.id_zolnierza"))
 
 
+class PrzynaleznoscJednostki(Base):
+    __tablename__ = "przynaleznosc_jednostki"
+
+    id_przynaleznosci: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    id_zolnierza: Mapped[str] = mapped_column(ForeignKey("zolnierz.id_zolnierza"), index=True)
+    id_jednostki: Mapped[str] = mapped_column(ForeignKey("jednostka.id_jednostki"), index=True)
+    data_od: Mapped[date] = mapped_column(Date)
+    data_do: Mapped[date | None] = mapped_column(Date)
+    powod: Mapped[str | None] = mapped_column(Text)
+    data_utworzenia: Mapped[datetime] = mapped_column(DateTime, default=teraz)
+    id_operatora: Mapped[str | None] = mapped_column(String(20))
+    zrodlo: Mapped[str | None] = mapped_column(String(30))
+
+
 class Przedsiewziecie(Base):
     __tablename__ = "przedsiewziecie"
 
@@ -119,6 +133,7 @@ class Delegacja(Base):
 
     id_delegacji: Mapped[str] = mapped_column(String(30), primary_key=True)
     id_zolnierza: Mapped[str] = mapped_column(ForeignKey("zolnierz.id_zolnierza"))
+    id_jednostki: Mapped[str | None] = mapped_column(ForeignKey("jednostka.id_jednostki"), index=True)
     id_przedsiewziecia: Mapped[str | None] = mapped_column(ForeignKey("przedsiewziecie.id_przedsiewziecia"))
     # Wniosek w postaci przesłanej przez użytkownika – pola typowane uzupełnia Agent Wniosków po walidacji
     dane_wniosku: Mapped[dict] = mapped_column(JSON, default=dict)

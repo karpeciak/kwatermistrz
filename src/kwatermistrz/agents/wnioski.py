@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from ..audit import Decyzja
 from ..messaging import Komunikat, Typ
-from ..models import Zolnierz
+from ..przynaleznosc import jednostka_delegacji
 from ..stawki import szacuj_koszt
 from ..walidacja import parsuj_date, waliduj_wniosek
 from .base import Agent, Kontekst, pobierz_delegacje
@@ -27,9 +27,9 @@ class AgentWnioskow(Agent):
 
     def waliduj(self, s: Session, k: Komunikat, ktx: Kontekst) -> None:
         d = pobierz_delegacje(s, k.id_delegacji)
-        zolnierz = s.get(Zolnierz, d.id_zolnierza)
         w = d.dane_wniosku
-        bledy = waliduj_wniosek(w, jednostka=zolnierz.id_jednostki if zolnierz else None)
+        jednostka = jednostka_delegacji(s, d)
+        bledy = waliduj_wniosek(w, jednostka=jednostka.id_jednostki if jednostka else None)
 
         if not bledy:
             d.cel_wyjazdu = w["cel_wyjazdu"].strip()

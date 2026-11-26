@@ -5,13 +5,23 @@ z tego pliku (to źródło prawdy dla danych słownikowych). Nie dotyka danych p
 ani pól zmienianych przez system (np. `Jednostka.budzet_wykorzystany`).
 """
 
+import warnings
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .db import Base
-from .models import Agent, Jednostka, ObiektZakwaterowania, Polaczenie, Przedsiewziecie, Zolnierz
+from .models import (
+    Agent,
+    Jednostka,
+    ObiektZakwaterowania,
+    Polaczenie,
+    Przedsiewziecie,
+    PrzynaleznoscJednostki,
+    Zolnierz,
+)
 
 AGENCI = [
     dict(
@@ -245,7 +255,7 @@ POLACZENIA += [
 ]
 
 
-def _uzupelnij(s: Session, model: type[Base], rekordy: list[dict]) -> None:
+def _uzupelnij(s: Session, model: type[Base], rekordy: list[dict], nie_aktualizuj: set[str] | None = None) -> None:
     """Dodaje brakujące rekordy, istniejące aktualizuje do wartości z listy."""
     for rekord in rekordy:
         klucz = rekord[model.__mapper__.primary_key[0].name]
@@ -254,15 +264,44 @@ def _uzupelnij(s: Session, model: type[Base], rekordy: list[dict]) -> None:
             s.add(model(**rekord))
         else:
             for pole, wartosc in rekord.items():
-                setattr(obiekt, pole, wartosc)
+                if pole not in (nie_aktualizuj or set()):
+                    setattr(obiekt, pole, wartosc)
         s.flush()
+
+
+def _uzupelnij_historie_przynaleznosci(s: Session) -> None:
+    for dane in ZOLNIERZE:
+        zolnierz = s.get(Zolnierz, dane["id_zolnierza"])
+        biezacy = s.scalar(
+            select(PrzynaleznoscJednostki).where(
+                PrzynaleznoscJednostki.id_zolnierza == zolnierz.id_zolnierza,
+                PrzynaleznoscJednostki.data_do.is_(None),
+            )
+        )
+        if biezacy is None:
+            s.add(
+                PrzynaleznoscJednostki(
+                    id_zolnierza=zolnierz.id_zolnierza,
+                    id_jednostki=zolnierz.id_jednostki,
+                    data_od=date.today(),
+                    zrodlo="seed",
+                )
+            )
+        elif biezacy.id_jednostki != zolnierz.id_jednostki:
+            warnings.warn(
+                f"Niespójna przynależność żołnierza {zolnierz.id_zolnierza}: historia i pole bieżące są różne",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+    s.flush()
 
 
 def zaladuj_dane_poczatkowe(s: Session) -> None:
     _uzupelnij(s, Agent, AGENCI)
     _uzupelnij(s, Jednostka, JEDNOSTKI)
-    _uzupelnij(s, Zolnierz, ZOLNIERZE)
+    _uzupelnij(s, Zolnierz, ZOLNIERZE, nie_aktualizuj={"id_jednostki"})
     s.get(Zolnierz, "ZOL-001").id_zastepcy = "ZOL-002"
+    _uzupelnij_historie_przynaleznosci(s)
     _uzupelnij(s, Przedsiewziecie, PRZEDSIEWZIECIA)
     _uzupelnij(s, ObiektZakwaterowania, OBIEKTY)
     _uzupelnij(s, Polaczenie, POLACZENIA)

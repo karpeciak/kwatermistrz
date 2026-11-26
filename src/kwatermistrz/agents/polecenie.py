@@ -19,7 +19,8 @@ from sqlalchemy.orm import Session
 from ..audit import Decyzja
 from ..db import teraz
 from ..messaging import Komunikat, Typ
-from ..models import Delegacja, Jednostka, PolecenieWyjazdu, Zolnierz
+from ..models import Delegacja, PolecenieWyjazdu, Zolnierz
+from ..przynaleznosc import jednostka_delegacji
 from ..walidacja import parsuj_date
 from .base import Kontekst, pobierz_delegacje
 
@@ -60,7 +61,7 @@ def _podstawa(d: Delegacja) -> tuple[str | None, date | None]:
 def tresc_polecenia(s: Session, d: Delegacja) -> dict:
     """Wypełnia wzór polecenia danymi delegacji; brakujące pola zostają puste (None)."""
     delegowany = s.get(Zolnierz, d.id_zolnierza)
-    jednostka = s.get(Jednostka, delegowany.id_jednostki) if delegowany else None
+    jednostka = jednostka_delegacji(s, d)
     zatwierdzajacy = s.get(Zolnierz, d.id_zatwierdzajacego) if d.id_zatwierdzajacego else None
     numer_rozkazu, data_rozkazu = _podstawa(d)
     return {

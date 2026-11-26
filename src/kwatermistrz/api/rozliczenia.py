@@ -31,13 +31,12 @@ from ..messaging import Broker, Komunikat, Typ
 from ..models import (
     Delegacja,
     DokumentKosztowy,
-    Jednostka,
     KorektaRozliczenia,
     Rozliczenie,
     Status,
     StatusRozliczenia,
-    Zolnierz,
 )
+from ..przynaleznosc import jednostka_delegacji
 from .zaleznosci import get_broker, get_sesja, pobierz_delegacje
 from .zatwierdzenia import koszt_delegacji
 
@@ -246,8 +245,7 @@ async def zatwierdz_wyliczenie(s: Session, broker: Broker, d: Delegacja) -> str 
     kwota = rozliczenie.kwota_naleznosci
     opis = f"Delegowany zatwierdził wyliczenie: {kwota:.2f} zł – gotowe do weryfikacji"
 
-    wnioskodawca = s.get(Zolnierz, d.id_zolnierza)
-    jednostka = s.get(Jednostka, wnioskodawca.id_jednostki) if wnioskodawca else None
+    jednostka = jednostka_delegacji(s, d)
     if jednostka is not None:
         zaangazowane = koszt_delegacji(d) or Decimal("0")
         jednostka.budzet_wykorzystany = max(Decimal("0"), (jednostka.budzet_wykorzystany or 0) - zaangazowane)
