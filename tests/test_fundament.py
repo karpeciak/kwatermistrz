@@ -9,7 +9,7 @@ from alembic import command
 from alembic.autogenerate import compare_metadata
 from alembic.config import Config
 from alembic.migration import MigrationContext
-from sqlalchemy import create_engine, func, select, text
+from sqlalchemy import create_engine, func, inspect, select, text
 
 from kwatermistrz.agents import AGENCI
 from kwatermistrz.db import Base, migruj, sesja, teraz
@@ -66,12 +66,32 @@ def test_migracja_bazy_sprzed_sprintu_1_zachowuje_dane(tmp_path):
     migruj(silnik)
 
     with silnik.connect() as polaczenie:
-        status, od_kiedy = polaczenie.execute(
-            text("SELECT status, data_zmiany_statusu FROM delegacja WHERE id_delegacji = 'D1'")
+        status, od_kiedy, id_jednostki = polaczenie.execute(
+            text("SELECT status, data_zmiany_statusu, id_jednostki FROM delegacja WHERE id_delegacji = 'D1'")
+        ).one()
+        historia = polaczenie.execute(
+            text("SELECT id_jednostki, data_od, data_do, zrodlo FROM przynaleznosc_jednostki WHERE id_zolnierza = 'Z1'")
         ).one()
         wersja = polaczenie.execute(text("SELECT version_num FROM alembic_version")).scalar()
     assert status == Status.W_AKCEPTACJI
     assert od_kiedy is not None
+    assert id_jednostki == "JW-1"
+    assert historia[0] == "JW-1" and historia[1] is not None and historia[2] is None and historia[3] == "migracja"
+    assert wersja == "0005"
+
+
+def test_downgrade_historii_nie_uszkadza_innych_tabel(tmp_path):
+    silnik = create_engine(f"sqlite:///{(tmp_path / 'downgrade.db').as_posix()}")
+    with silnik.begin() as polaczenie:
+        cfg = konfiguracja_migracji(polaczenie)
+        command.upgrade(cfg, "head")
+        command.downgrade(cfg, "0004")
+        tabele = inspect(polaczenie).get_table_names()
+        kolumny_delegacji = {kolumna["name"] for kolumna in inspect(polaczenie).get_columns("delegacja")}
+        wersja = polaczenie.execute(text("SELECT version_num FROM alembic_version")).scalar()
+    assert "przynaleznosc_jednostki" not in tabele
+    assert {"jednostka", "zolnierz", "delegacja"} <= set(tabele)
+    assert "id_jednostki" not in kolumny_delegacji
     assert wersja == "0004"
 
 

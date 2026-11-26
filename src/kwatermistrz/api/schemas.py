@@ -84,3 +84,32 @@ class ZolnierzOut(BaseModel):
     funkcja: str | None
     id_przelozonego: str | None
     id_zastepcy: str | None
+
+
+class ZmianaPrzynaleznosciIn(BaseModel):
+    id_jednostki: str = Field(min_length=1, max_length=20)
+    data_od: date
+    powod: str | None = Field(None, max_length=500)
+
+
+class JednostkaPrzynaleznosciOut(BaseModel):
+    id_jednostki: str
+    nazwa: str
+    miejscowosc: str
+
+
+class WpisPrzynaleznosciOut(BaseModel):
+    id_przynaleznosci: int
+    id_jednostki: str
+    nazwa_jednostki: str
+    data_od: date
+    data_do: date | None
+    powod: str | None
+    id_operatora: str | None
+    zrodlo: str | None
+
+
+class PrzynaleznoscOut(BaseModel):
+    id_zolnierza: str
+    aktualna_jednostka: JednostkaPrzynaleznosciOut
+    historia: list[WpisPrzynaleznosciOut]

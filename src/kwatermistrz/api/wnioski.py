@@ -22,6 +22,8 @@ from sqlalchemy.orm import Session
 from ..db import teraz
 from ..messaging import Broker, Komunikat, Typ
 from ..models import Delegacja, LogDecyzji, LogOperacji, Przedsiewziecie, Status, Zolnierz
+from ..przynaleznosc import jednostka_na_dzien
+from ..walidacja import parsuj_date
 from .schemas import DecyzjaAgentaOut, DelegacjaOut, OperacjaOut, WniosekIn
 from .zaleznosci import get_broker, get_sesja, pobierz_delegacje
 
@@ -75,9 +77,12 @@ async def zarejestruj_wniosek(s: Session, broker: Broker, wniosek: WniosekIn, kl
         raise HTTPException(404, f"Nie znaleziono przedsięwzięcia {wniosek.id_przedsiewziecia}")
 
     usun_wersje_robocza(s, wniosek.id_zolnierza)  # S22IT1S0P2-37: wersja niezłożona znika
+    dzien_wyjazdu = parsuj_date(wniosek.data_wyjazdu) if wniosek.data_wyjazdu else teraz().date()
+    jednostka = jednostka_na_dzien(s, wniosek.id_zolnierza, dzien_wyjazdu or teraz().date())
     d = Delegacja(
         id_delegacji=f"DEL-{teraz():%Y}-{uuid.uuid4().hex[:6].upper()}",
         id_zolnierza=wniosek.id_zolnierza,
+        id_jednostki=jednostka.id_jednostki if jednostka else None,
         id_przedsiewziecia=wniosek.id_przedsiewziecia,
         dane_wniosku=wniosek.model_dump(exclude={"id_zolnierza", "id_przedsiewziecia"}),
         potrzeba_zakwaterowania=wniosek.potrzeba_zakwaterowania,
@@ -162,9 +167,11 @@ def zapisz_wersje_robocza(s: Session, id_zolnierza: str, dane: dict, etap: str) 
     """Zachowuje podane dane jako wniosek niezłożony (jedna wersja robocza na wnioskodawcę)."""
     d = wersja_robocza(s, id_zolnierza)
     if d is None:
+        jednostka = jednostka_na_dzien(s, id_zolnierza, teraz().date())
         d = Delegacja(
             id_delegacji=f"ROB-{uuid.uuid4().hex[:8].upper()}",
             id_zolnierza=id_zolnierza,
+            id_jednostki=jednostka.id_jednostki if jednostka else None,
             status=Status.ROBOCZY,
             data_zlozenia=None,
         )

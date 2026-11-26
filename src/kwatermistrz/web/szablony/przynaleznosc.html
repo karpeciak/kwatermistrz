@@ -1,0 +1,71 @@
+{% extends "baza.html" %}
+{% block tytul %}Przynależność do jednostki{% endblock %}
+{% block tresc %}
+<div class="naglowek-strony">
+  <div>
+    <h2>Przynależność do jednostki</h2>
+    <p>Profil: <strong>{{ profil.imie_nazwisko }}</strong></p>
+    <p>Bieżąca jednostka: <strong>{{ aktualna.nazwa if aktualna else "Brak jednostki" }}</strong>{% if aktualna %}, {{ aktualna.miejscowosc }}{% endif %}</p>
+  </div>
+</div>
+
+{% if komunikat %}<p class="komunikat{% if blad %} blad{% endif %}" role="{% if blad %}alert{% else %}status{% endif %}">{{ komunikat }}</p>{% endif %}
+
+{% if podwladni %}
+<nav aria-label="Bezpośredni podwładni">
+  <h3>Bezpośredni podwładni</h3>
+  <ul>
+    {% for podwladny in podwladni %}
+    <li><a href="/app/zolnierze/{{ podwladny.id_zolnierza }}/przynaleznosc">{{ podwladny.imie_nazwisko }}</a></li>
+    {% endfor %}
+  </ul>
+</nav>
+{% endif %}
+
+{% if moze_zmieniac %}
+<article>
+  <h3>Zmień jednostkę</h3>
+  <form method="post">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <label for="id_jednostki">Nowa jednostka
+      <select id="id_jednostki" name="id_jednostki" required>
+        <option value="">Wybierz jednostkę</option>
+        {% for jednostka in jednostki %}
+        <option value="{{ jednostka.id_jednostki }}"{% if formularz.get("id_jednostki") == jednostka.id_jednostki %} selected{% endif %}>{{ jednostka.nazwa }} - {{ jednostka.miejscowosc }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label for="data_od">Data zmiany
+      <input id="data_od" name="data_od" type="date" value="{{ formularz.get('data_od', '') }}" required>
+    </label>
+    <label for="powod">Powód (opcjonalnie)
+      <textarea id="powod" name="powod" maxlength="500">{{ formularz.get("powod", "") }}</textarea>
+    </label>
+    <button type="submit">Zapisz zmianę jednostki</button>
+  </form>
+</article>
+{% endif %}
+
+<section aria-labelledby="historia-przypisan">
+  <h3 id="historia-przypisan">Historia przypisań</h3>
+  {% if historia %}
+  <div class="overflow-auto">
+    <table>
+      <thead><tr><th>Jednostka</th><th>Od</th><th>Do</th><th>Powód</th></tr></thead>
+      <tbody>
+      {% for wpis in historia %}
+        <tr>
+          <td>{{ nazwy_jednostek.get(wpis.id_jednostki, wpis.id_jednostki) }}</td>
+          <td>{{ wpis.data_od }}</td>
+          <td>{{ wpis.data_do or "obecnie" }}</td>
+          <td>{{ wpis.powod or "-" }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p role="status">Brak historii przypisań.</p>
+  {% endif %}
+</section>
+{% endblock %}

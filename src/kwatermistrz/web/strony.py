@@ -40,7 +40,7 @@ from ..api.rozliczenia import (
     zlec_weryfikacje,
     zlec_wyliczenie,
 )
-from ..api.schemas import WniosekIn
+from ..api.schemas import WniosekIn, ZmianaPrzynaleznosciIn
 from ..api.wnioski import (
     etap_przygotowania,
     usun_wersje_robocza,
@@ -83,6 +83,7 @@ from ..podroze import (
     decyzja_do_uzgodnienia,
     zestawienie,
 )
+from ..przynaleznosc import dostep_do_przynaleznosci, historia_przynaleznosci, zmien_jednostke
 from ..sesje import CIASTECZKO, CZAS_SESJI, odczytaj_sesje, token_csrf, utworz_sesje
 from ..walidacja import parsuj_date, waliduj_wniosek
 
@@ -468,6 +469,101 @@ def pulpit(request: Request, s: Session = Depends(get_sesja), uzytkownik: Zolnie
     osoby = {z.id_zolnierza: z for z in s.scalars(select(Zolnierz).where(Zolnierz.id_zolnierza.in_(id_osob)))}
     robocza = wersja_robocza(s, uzytkownik.id_zolnierza)
     return strona(request, s, "pulpit.html", uzytkownik, wnioski=wnioski, osoby=osoby, robocza=robocza)
+
+
+def _widok_przynaleznosci(
+    request: Request,
+    s: Session,
+    uzytkownik: Zolnierz,
+    profil: Zolnierz,
+    *,
+    komunikat: str | None = None,
+    blad: bool = False,
+    formularz: dict | None = None,
+):
+    wpisy = historia_przynaleznosci(s, profil.id_zolnierza)
+    jednostki = list(s.scalars(select(Jednostka).order_by(Jednostka.nazwa)))
+    podwladni = list(
+        s.scalars(
+            select(Zolnierz).where(Zolnierz.id_przelozonego == uzytkownik.id_zolnierza).order_by(Zolnierz.imie_nazwisko)
+        )
+    )
+    odpowiedz = strona(
+        request,
+        s,
+        "przynaleznosc.html",
+        uzytkownik,
+        profil=profil,
+        aktualna=s.get(Jednostka, profil.id_jednostki),
+        historia=wpisy,
+        jednostki=jednostki,
+        podwladni=podwladni,
+        moze_zmieniac=profil.id_przelozonego == uzytkownik.id_zolnierza,
+        nazwy_jednostek={j.id_jednostki: j.nazwa for j in jednostki},
+        komunikat=komunikat,
+        blad=blad,
+        formularz=formularz or {},
+    )
+    return odpowiedz
+
+
+@router.get("/zolnierze/{id_zolnierza}/przynaleznosc", response_class=HTMLResponse)
+def przynaleznosc_zolnierza(
+    id_zolnierza: str,
+    request: Request,
+    wynik: str | None = None,
+    s: Session = Depends(get_sesja),
+    uzytkownik: Zolnierz = Depends(biezacy_uzytkownik),
+):
+    profil = dostep_do_przynaleznosci(s, id_zolnierza, uzytkownik)
+    komunikat = "Zmieniono jednostkę i zapisano historię przypisania." if wynik == "zmieniono" else None
+    return _widok_przynaleznosci(request, s, uzytkownik, profil, komunikat=komunikat)
+
+
+@router.post("/zolnierze/{id_zolnierza}/przynaleznosc", response_class=HTMLResponse)
+def zmien_przynaleznosc_zolnierza(
+    id_zolnierza: str,
+    request: Request,
+    id_jednostki: str = Form(""),
+    data_od: str = Form(""),
+    powod: str = Form("", max_length=500),
+    s: Session = Depends(get_sesja),
+    uzytkownik: Zolnierz = Depends(biezacy_uzytkownik),
+):
+    profil = dostep_do_przynaleznosci(s, id_zolnierza, uzytkownik, zapis=True)
+    formularz = {"id_jednostki": id_jednostki, "data_od": data_od, "powod": powod}
+    try:
+        dane = ZmianaPrzynaleznosciIn(id_jednostki=id_jednostki, data_od=data_od, powod=powod or None)
+        zmien_jednostke(
+            s,
+            id_zolnierza,
+            dane.id_jednostki,
+            dane.data_od,
+            operator=uzytkownik,
+            powod=dane.powod,
+            zrodlo="formularz",
+        )
+        s.commit()
+    except ValidationError:
+        odpowiedz = _widok_przynaleznosci(
+            request,
+            s,
+            uzytkownik,
+            profil,
+            komunikat="Sprawdź jednostkę, datę zmiany i długość powodu.",
+            blad=True,
+            formularz=formularz,
+        )
+        odpowiedz.status_code = 422
+        return odpowiedz
+    except HTTPException as exc:
+        s.rollback()
+        odpowiedz = _widok_przynaleznosci(
+            request, s, uzytkownik, profil, komunikat=str(exc.detail), blad=True, formularz=formularz
+        )
+        odpowiedz.status_code = exc.status_code
+        return odpowiedz
+    return RedirectResponse(f"/app/zolnierze/{id_zolnierza}/przynaleznosc?wynik=zmieniono", status_code=303)
 
 
 @router.get("/wnioski/nowy", response_class=HTMLResponse)

@@ -17,7 +17,6 @@ from sqlalchemy.orm import Session
 
 from .models import (
     Delegacja,
-    Jednostka,
     LogDecyzji,
     LogOperacji,
     Polaczenie,
@@ -25,8 +24,8 @@ from .models import (
     Przejazd,
     Status,
     StatusRezerwacji,
-    Zolnierz,
 )
+from .przynaleznosc import jednostka_delegacji
 
 Kryterium = Literal["standardowe", "koszt", "czas", "bezpieczenstwo", "punktualnosc"]
 KRYTERIA = {
@@ -95,8 +94,7 @@ class WariantPodrozyIn(BaseModel):
 
 
 def trasa_delegacji(s: Session, d: Delegacja) -> tuple[str, str]:
-    z = s.get(Zolnierz, d.id_zolnierza)
-    jednostka = s.get(Jednostka, z.id_jednostki) if z else None
+    jednostka = jednostka_delegacji(s, d)
     return (jednostka.miejscowosc if jednostka else "", d.miejsce_docelowe or "")
 
 

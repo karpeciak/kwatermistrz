@@ -75,9 +75,9 @@ def koszt_delegacji(d: Delegacja) -> Decimal | None:
     return szacuj_koszt(d.data_wyjazdu, d.data_powrotu, d.potrzeba_zakwaterowania)
 
 
-def budzet_jednostki(s: Session, przelozony: Zolnierz) -> Budzet | None:
+def budzet_jednostki(s: Session, przelozony: Zolnierz, id_jednostki: str | None = None) -> Budzet | None:
     """Budżet delegacji jednostki przełożonego: przyznany, wykorzystany, pozostały."""
-    j = s.get(Jednostka, przelozony.id_jednostki)
+    j = s.get(Jednostka, id_jednostki or przelozony.id_jednostki)
     if j is None:
         return None
     # wykorzystany = zaangażowany w zatwierdzone delegacje + wydatkowany z rozliczeń (S22IT1S0P2-66)
@@ -149,14 +149,19 @@ async def decyzja_zbiorcza(
 
     koszty = {d.id_delegacji: koszt_delegacji(d) or Decimal("0") for d in wybrane}
     wynik.koszt_laczny = sum(koszty.values(), Decimal("0"))
-    przekroczenie = None
+    przekroczenia: dict[str, str] = {}
     if decyzja == "Zgoda":
-        budzet = budzet_jednostki(s, przelozony)
-        if budzet is not None and wynik.koszt_laczny > budzet.pozostaly:
-            przekroczenie = (
-                f"Łączny koszt zatwierdzanych wniosków ({zl(wynik.koszt_laczny)}) przekracza "
-                f"dostępny budżet jednostki ({zl(budzet.pozostaly)})"
-            )
+        koszty_jednostek: dict[str, Decimal] = {}
+        for d in wybrane:
+            id_jednostki = d.id_jednostki or przelozony.id_jednostki
+            koszty_jednostek[id_jednostki] = koszty_jednostek.get(id_jednostki, Decimal("0")) + koszty[d.id_delegacji]
+        for id_jednostki, koszt in koszty_jednostek.items():
+            budzet = budzet_jednostki(s, przelozony, id_jednostki)
+            if budzet is not None and koszt > budzet.pozostaly:
+                przekroczenia[id_jednostki] = (
+                    f"Łączny koszt zatwierdzanych wniosków jednostki {id_jednostki} ({zl(koszt)}) przekracza "
+                    f"dostępny budżet jednostki ({zl(budzet.pozostaly)})"
+                )
 
     for d in wybrane:
         dane = {
@@ -165,14 +170,18 @@ async def decyzja_zbiorcza(
             "uzasadnienie": uzasadnienie,
             "koszt": str(koszty[d.id_delegacji]),
         }
+        id_jednostki = d.id_jednostki or przelozony.id_jednostki
+        przekroczenie = przekroczenia.get(id_jednostki)
         if przekroczenie:
             dane["przekroczenie_budzetu"] = przekroczenie
         await broker.publikuj(Komunikat(typ=Typ.DECYZJA_PRZELOZONEGO, id_delegacji=d.id_delegacji, dane=dane))
         (wynik.wstrzymane if przekroczenie else wynik.przekazane).append(d.id_delegacji)
 
-    if przekroczenie:
+    if przekroczenia:
         wynik.blad = True
-        wynik.komunikat = f"{przekroczenie} – zatwierdzenie wstrzymano do decyzji komórki finansowej."
+        wynik.komunikat = (
+            "; ".join(przekroczenia.values()) + " – zatwierdzenie wstrzymano do decyzji komórki finansowej."
+        )
     else:
         wynik.komunikat = f"Przekazano decyzję „{decyzja}” dla wniosków: {len(wynik.przekazane)}."
     return wynik

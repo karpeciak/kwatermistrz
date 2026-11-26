@@ -29,12 +29,11 @@ from ..messaging import Komunikat, Typ
 from ..models import (
     Delegacja,
     DokumentKosztowy,
-    Jednostka,
     KorektaRozliczenia,
     Rozliczenie,
     StatusRozliczenia,
-    Zolnierz,
 )
+from ..przynaleznosc import jednostka_delegacji
 from .base import Agent, Kontekst, pobierz_delegacje
 from .rozliczenia import wylicz_naleznosci
 
@@ -62,8 +61,7 @@ def braki_wyliczenia(r: Rozliczenie) -> list[str]:
 
 def skoryguj_budzet(s: Session, d: Delegacja, roznica: Decimal) -> None:
     """Zatwierdzona należność jest już wydatkiem jednostki – korekta zmienia go o różnicę."""
-    zolnierz = s.get(Zolnierz, d.id_zolnierza)
-    jednostka = s.get(Jednostka, zolnierz.id_jednostki) if zolnierz else None
+    jednostka = jednostka_delegacji(s, d)
     if jednostka is not None:
         jednostka.budzet_wydatkowany = (jednostka.budzet_wydatkowany or Decimal("0")) + roznica
 
