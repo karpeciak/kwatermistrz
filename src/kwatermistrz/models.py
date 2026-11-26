@@ -35,6 +35,10 @@ class StatusRezerwacji:
     WYBRANA = "wybrana"
     DO_DECYZJI_PRZELOZONEGO = "do decyzji przełożonego"  # wariant wymagający odstępstwa (-39)
     DO_UZGODNIENIA = "do uzgodnienia"  # odrzucono wszystkie warianty (-27)
+    # S22IT1S0P2-17: odwołanie przejazdu przez przewoźnika i przejazdy zastępcze
+    ODWOLANA = "odwołana"  # zarezerwowany przejazd odwołany przez przewoźnika
+    ALTERNATYWA = "alternatywa"  # przejazd zastępczy czekający na wybór delegowanego
+    ANULOWANA = "anulowana"  # rezerwacja zastąpiona innym przejazdem albo niewybrana alternatywa
 
 
 class StatusRozliczenia:

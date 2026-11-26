@@ -37,6 +37,9 @@ class Typ:
     WYNIK_ZAKWATEROWANIA = "wynik.zakwaterowanie"
     # Realizacja (sprint 3)
     ZADANIE_MONITOROWANIA = "zadanie.monitorowanie"
+    # Zmiana przejazdu po odwołaniu przez przewoźnika (S22IT1S0P2-17)
+    ODWOLANIE_PRZEJAZDU = "zdarzenie.odwolanie_przejazdu"
+    WYBOR_PRZEJAZDU_ALTERNATYWNEGO = "wybor.przejazd_alternatywny"
     # Rozliczenie (S22IT1S0P2-36, -20, -43)
     ZADANIE_ROZLICZENIA = "zadanie.rozliczenie"
     WYNIK_ROZLICZENIA = "wynik.rozliczenie"

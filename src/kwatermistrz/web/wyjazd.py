@@ -17,7 +17,8 @@ from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..api.organizacja import przyjmij_wybor
+from ..agents.zmiana_przejazdu import dostepny_budzet, odwolane_przejazdy, przejazdy_alternatywne
+from ..api.organizacja import WyborAlternatywyIn, przyjmij_wybor, przyjmij_wybor_alternatywy
 from ..api.zaleznosci import chron_formularze, get_broker, get_sesja, sprawdz_csrf
 from ..messaging import Broker, Komunikat, Typ
 from ..models import (
@@ -40,9 +41,15 @@ ETAPY_ORGANIZACJI = (Status.ZATWIERDZONY, Status.ZORGANIZOWANY)
 KIERUNKI = ("Tam", "Powrót")
 WYNIK_WYBOR = "wybor-przekazany"
 WYNIK_ODRZUCENIE = "warianty-odrzucone"
+WYNIK_ZMIANA = "zmiana-przejazdu"
+WYNIK_ODRZUCENIE_ALTERNATYW = "alternatywy-odrzucone"
 KOMUNIKATY = {
     WYNIK_WYBOR: "Wybór przekazany – system zapisze go i uzupełni dokumentację delegacji.",
     WYNIK_ODRZUCENIE: "Odrzucono zaproponowane warianty – przejazd zostanie uzgodniony indywidualnie.",
+    WYNIK_ZMIANA: "Wybór przekazany – system anuluje odwołaną rezerwację, zarezerwuje nowy przejazd "
+    "i zaktualizuje dokumentację delegacji.",
+    WYNIK_ODRZUCENIE_ALTERNATYW: "Odrzucono przejazdy alternatywne – sprawę przejmie osoba odpowiedzialna "
+    "za organizację delegacji.",
 }
 
 
@@ -88,6 +95,7 @@ def dane_przejazdu(s: Session, d: Delegacja) -> dict:
         warianty={k: [p for p in propozycje if p.kierunek == k] for k in kierunki},
         polaczenia=polaczenia,
         wybrane=wybrane,
+        odwolane=[p for p in przejazdy if p.status == StatusRezerwacji.ODWOLANA],  # S22IT1S0P2-17
         do_uzgodnienia=do_uzgodnienia,
         rekomendowane={w["id_przejazdu"] for w in porownanie["warianty"] if w["rekomendowany"]},
         mozna_wybrac=d.status == Status.ZATWIERDZONY and bool(propozycje) and not wybrane and not do_uzgodnienia,
@@ -223,6 +231,103 @@ async def odrzuc_warianty_przejazdu(
             raise
         return strona(request, s, "przejazd.html", uzytkownik, **kontekst, komunikat=str(e.detail), blad=True)
     return RedirectResponse(f"/app/wnioski/{id_delegacji}/przejazd?wynik={WYNIK_ODRZUCENIE}", status_code=303)
+
+
+# ---------------------------------------------------------------- przejazd alternatywny (S22IT1S0P2-136)
+
+
+def dane_alternatyw(s: Session, d: Delegacja) -> dict:
+    odwolane = odwolane_przejazdy(s, d)
+    propozycje = przejazdy_alternatywne(s, d)
+    id_polaczen = {p.id_polaczenia for p in odwolane + propozycje if p.id_polaczenia}
+    polaczenia = {
+        x.id_polaczenia: x for x in s.scalars(select(Polaczenie).where(Polaczenie.id_polaczenia.in_(id_polaczen)))
+    }
+    return dict(
+        d=d,
+        odwolane=odwolane,
+        propozycje=propozycje,
+        polaczenia=polaczenia,
+        budzet=dostepny_budzet(s, d),
+        mozna_wybrac=bool(propozycje),
+    )
+
+
+@router.get("/wnioski/{id_delegacji}/przejazd-alternatywny", response_class=HTMLResponse)
+def przejazd_alternatywny(
+    id_delegacji: str,
+    request: Request,
+    wynik: str | None = None,
+    s: Session = Depends(get_sesja),
+    uzytkownik: Zolnierz = Depends(biezacy_uzytkownik),
+):
+    """S22IT1S0P2-136: informacja o odwołaniu przejazdu i wybór przejazdu zastępczego."""
+    d = delegacja_do_organizacji(s, id_delegacji, uzytkownik)
+    return strona(
+        request, s, "przejazd_alternatywny.html", uzytkownik, **dane_alternatyw(s, d), komunikat=KOMUNIKATY.get(wynik)
+    )
+
+
+async def _przekaz_wybor_alternatywy(
+    request: Request, s: Session, broker: Broker, d: Delegacja, uzytkownik: Zolnierz, wybor_dane: dict, wynik: str
+):
+    kontekst = dane_alternatyw(s, d)
+    try:
+        wybor = WyborAlternatywyIn(**wybor_dane)
+        await przyjmij_wybor_alternatywy(s, broker, d.id_delegacji, uzytkownik, wybor)
+    except (ValidationError, HTTPException) as e:
+        if isinstance(e, HTTPException) and e.status_code != 409:
+            raise
+        komunikat = (
+            str(e.detail) if isinstance(e, HTTPException) else e.errors()[0]["msg"].removeprefix("Value error, ")
+        )
+        return strona(
+            request,
+            s,
+            "przejazd_alternatywny.html",
+            uzytkownik,
+            **kontekst,
+            komunikat=komunikat,
+            blad=True,
+            zaznaczony=wybor_dane.get("id_przejazdu"),
+            uzasadnienie=wybor_dane.get("uzasadnienie", ""),
+        )
+    return RedirectResponse(f"/app/wnioski/{d.id_delegacji}/przejazd-alternatywny?wynik={wynik}", status_code=303)
+
+
+@router.post("/wnioski/{id_delegacji}/przejazd-alternatywny", response_class=HTMLResponse)
+async def wybierz_przejazd_alternatywny(
+    id_delegacji: str,
+    request: Request,
+    id_przejazdu: str = Form(""),
+    uzasadnienie: str = Form(""),
+    s: Session = Depends(get_sesja),
+    broker: Broker = Depends(get_broker),
+    uzytkownik: Zolnierz = Depends(biezacy_uzytkownik),
+):
+    """Kroki 3–4: delegowany wybiera zamiennik; resztę (anulowanie, rezerwacja, dokumentacja) robi agent."""
+    d = delegacja_do_organizacji(s, id_delegacji, uzytkownik)
+    formularz = await request.form()
+    sprawdz_csrf(request, request.headers.get("X-CSRF-Token") or formularz.get("csrf"))
+    dane = {"id_przejazdu": _na_liczbe(id_przejazdu), "uzasadnienie": uzasadnienie.strip()}
+    return await _przekaz_wybor_alternatywy(request, s, broker, d, uzytkownik, dane, WYNIK_ZMIANA)
+
+
+@router.post("/wnioski/{id_delegacji}/przejazd-alternatywny/odrzucenie", response_class=HTMLResponse)
+async def odrzuc_przejazdy_alternatywne(
+    id_delegacji: str,
+    request: Request,
+    przyczyna: str = Form(""),
+    s: Session = Depends(get_sesja),
+    broker: Broker = Depends(get_broker),
+    uzytkownik: Zolnierz = Depends(biezacy_uzytkownik),
+):
+    """Scenariusz 3a–4a: żaden zamiennik nie odpowiada – sprawę przejmuje osoba odpowiedzialna."""
+    d = delegacja_do_organizacji(s, id_delegacji, uzytkownik)
+    formularz = await request.form()
+    sprawdz_csrf(request, request.headers.get("X-CSRF-Token") or formularz.get("csrf"))
+    dane = {"odrzuc_wszystkie": True, "uzasadnienie": przyczyna.strip()}
+    return await _przekaz_wybor_alternatywy(request, s, broker, d, uzytkownik, dane, WYNIK_ODRZUCENIE_ALTERNATYW)
 
 
 # ---------------------------------------------------------------- zakwaterowanie (S22IT1S0P2-99)

@@ -8,6 +8,10 @@
 <article>
   <header><strong>Organizacja wyjazdu</strong></header>
   <p>Wybierz przejazd{% if d.potrzeba_zakwaterowania %} i zakwaterowanie{% endif %} spośród propozycji przygotowanych przez system.</p>
+  {% if odwolany_przejazd %}
+  <p class="komunikat ostrzezenie" role="status">Przewoźnik odwołał zarezerwowany przejazd.
+    <a href="/app/wnioski/{{ d.id_delegacji }}/przejazd-alternatywny">Wybierz przejazd alternatywny</a></p>
+  {% endif %}
   <div class="przyciski-formularza">
     <a role="button" href="/app/wnioski/{{ d.id_delegacji }}/przejazd">Przejazd</a>
     {% if d.potrzeba_zakwaterowania %}
