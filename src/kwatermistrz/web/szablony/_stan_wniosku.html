@@ -11,6 +11,10 @@
 
   {% include "_etapy_wniosku.html" %}
 
+  {% if komunikat_statusu %}
+  <p class="komunikat" role="status">{{ komunikat_statusu }}</p>
+  {% endif %}
+
   {# S22IT1S0P2-32, scenariusz 3a: brak aktualnej informacji o statusie #}
   {% if w_toku %}
   <p class="komunikat ostrzezenie brak-polaczenia" role="status" hidden>
@@ -45,6 +49,12 @@
     <p><a href="/app/wnioski/{{ d.id_delegacji }}/rozliczenie" role="button">Przejdź do rozliczenia</a></p>
     {% elif d.status == "rozliczony" and uzytkownik.id_zolnierza == d.id_zolnierza %}
     <p><a href="/app/wnioski/{{ d.id_delegacji }}/rozliczenie" role="button" class="outline">Zobacz rozliczenie</a></p>
+    {% endif %}
+    {% if uzytkownik.id_zolnierza == d.id_zolnierza %}
+    <form method="post" action="/app/wnioski/{{ d.id_delegacji }}/sprawdz-status">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <button type="submit" class="outline">Poproś o sprawdzenie statusu</button>
+    </form>
     {% endif %}
     {% if d.status in ["zatwierdzony", "zorganizowany", "w trakcie", "rozliczony"] %}
     <a href="/app/wnioski/{{ d.id_delegacji }}/podroz" role="button" class="outline">Przejazdy i wybór podróży</a>
