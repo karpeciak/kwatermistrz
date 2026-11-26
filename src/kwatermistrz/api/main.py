@@ -22,8 +22,9 @@ from ..db import migruj, sesja
 from ..messaging import Broker
 from ..models import Zolnierz
 from ..seed import zaladuj_dane_poczatkowe
+from ..web import jednostki as web_jednostki
 from ..web import strony, wyjazd
-from . import organizacja, rozliczenia, slowniki, wnioski, zatwierdzenia
+from . import jednostki, organizacja, rozliczenia, slowniki, wnioski, zatwierdzenia
 from .schemas import ZolnierzOut
 from .zaleznosci import get_broker, get_sesja
 
@@ -46,12 +47,13 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Kwatermistrz API", version=__version__, lifespan=lifespan)
-for modul in (wnioski, zatwierdzenia, organizacja, rozliczenia, slowniki):
+for modul in (wnioski, zatwierdzenia, organizacja, rozliczenia, slowniki, jednostki):
     app.include_router(modul.router)
 
 # Interfejs użytkownika (strony pod /app) – src/kwatermistrz/web/
 app.include_router(strony.router)
 app.include_router(wyjazd.router)  # S22IT1S0P2-45, -99
+app.include_router(web_jednostki.router)
 app.mount("/statyczne", StaticFiles(directory=strony.KATALOG / "statyczne"), name="statyczne")
 
 
