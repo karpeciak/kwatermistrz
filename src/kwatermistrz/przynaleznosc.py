@@ -6,6 +6,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from .db import teraz
 from .models import Delegacja, Jednostka, PrzynaleznoscJednostki, Zolnierz
 
 
@@ -46,16 +47,30 @@ def jednostka_na_dzien(s: Session, id_zolnierza: str, dzien: date) -> Jednostka 
     if wpis is not None:
         return s.get(Jednostka, wpis.id_jednostki)
 
-    najwczesniejsza = s.scalar(
-        select(PrzynaleznoscJednostki.data_od)
+    najwczesniejszy_wpis = s.scalar(
+        select(PrzynaleznoscJednostki)
         .where(PrzynaleznoscJednostki.id_zolnierza == id_zolnierza)
         .order_by(PrzynaleznoscJednostki.data_od)
         .limit(1)
     )
+    if najwczesniejszy_wpis is not None and dzien < najwczesniejszy_wpis.data_od:
+        return s.get(Jednostka, najwczesniejszy_wpis.id_jednostki)
+
     zolnierz = s.get(Zolnierz, id_zolnierza)
-    if zolnierz is not None and (najwczesniejsza is None or dzien < najwczesniejsza):
+    if zolnierz is not None and najwczesniejszy_wpis is None:
         return s.get(Jednostka, zolnierz.id_jednostki)
     return None
+
+
+def dostep_do_przynaleznosci(s: Session, id_zolnierza: str, operator: Zolnierz, *, zapis: bool = False) -> Zolnierz:
+    zolnierz = s.get(Zolnierz, id_zolnierza)
+    if zolnierz is None:
+        raise HTTPException(404, f"Nie znaleziono żołnierza {id_zolnierza}")
+    wlasny_profil = zolnierz.id_zolnierza == operator.id_zolnierza
+    bezposredni_podwladny = zolnierz.id_przelozonego == operator.id_zolnierza
+    if (zapis and not bezposredni_podwladny) or (not zapis and not (wlasny_profil or bezposredni_podwladny)):
+        raise HTTPException(403, "Brak uprawnień do profilu przynależności")
+    return zolnierz
 
 
 def jednostka_delegacji(s: Session, delegacja: Delegacja) -> Jednostka | None:
@@ -71,16 +86,14 @@ def zmien_jednostke(
     id_jednostki: str,
     data_od: date,
     *,
+    operator: Zolnierz,
     powod: str | None = None,
-    id_operatora: str | None = None,
     zrodlo: str | None = None,
 ) -> PrzynaleznoscJednostki:
-    zolnierz = s.get(Zolnierz, id_zolnierza)
-    if zolnierz is None:
-        raise HTTPException(404, f"Nie znaleziono żołnierza {id_zolnierza}")
+    zolnierz = dostep_do_przynaleznosci(s, id_zolnierza, operator, zapis=True)
     if s.get(Jednostka, id_jednostki) is None:
         raise HTTPException(404, f"Nie znaleziono jednostki {id_jednostki}")
-    if data_od > date.today():
+    if data_od > teraz().date():
         raise HTTPException(422, "Data zmiany jednostki nie może przypadać w przyszłości")
 
     with s.begin_nested():
@@ -110,7 +123,7 @@ def zmien_jednostke(
             id_jednostki=id_jednostki,
             data_od=data_od,
             powod=(powod or "").strip() or None,
-            id_operatora=id_operatora,
+            id_operatora=operator.id_zolnierza,
             zrodlo=zrodlo,
         )
         s.add(nowy)

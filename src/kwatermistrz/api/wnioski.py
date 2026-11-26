@@ -11,7 +11,6 @@ Do zrobienia w sprincie 1:
 """
 
 import uuid
-from datetime import date
 from typing import Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException
@@ -78,8 +77,8 @@ async def zarejestruj_wniosek(s: Session, broker: Broker, wniosek: WniosekIn, kl
         raise HTTPException(404, f"Nie znaleziono przedsięwzięcia {wniosek.id_przedsiewziecia}")
 
     usun_wersje_robocza(s, wniosek.id_zolnierza)  # S22IT1S0P2-37: wersja niezłożona znika
-    dzien_wyjazdu = parsuj_date(wniosek.data_wyjazdu) if wniosek.data_wyjazdu else date.today()
-    jednostka = jednostka_na_dzien(s, wniosek.id_zolnierza, dzien_wyjazdu or date.today())
+    dzien_wyjazdu = parsuj_date(wniosek.data_wyjazdu) if wniosek.data_wyjazdu else teraz().date()
+    jednostka = jednostka_na_dzien(s, wniosek.id_zolnierza, dzien_wyjazdu or teraz().date())
     d = Delegacja(
         id_delegacji=f"DEL-{teraz():%Y}-{uuid.uuid4().hex[:6].upper()}",
         id_zolnierza=wniosek.id_zolnierza,
@@ -168,7 +167,7 @@ def zapisz_wersje_robocza(s: Session, id_zolnierza: str, dane: dict, etap: str) 
     """Zachowuje podane dane jako wniosek niezłożony (jedna wersja robocza na wnioskodawcę)."""
     d = wersja_robocza(s, id_zolnierza)
     if d is None:
-        jednostka = jednostka_na_dzien(s, id_zolnierza, date.today())
+        jednostka = jednostka_na_dzien(s, id_zolnierza, teraz().date())
         d = Delegacja(
             id_delegacji=f"ROB-{uuid.uuid4().hex[:8].upper()}",
             id_zolnierza=id_zolnierza,

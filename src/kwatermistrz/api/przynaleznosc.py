@@ -5,16 +5,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..models import Jednostka, Zolnierz
-from ..przynaleznosc import historia_przynaleznosci, zmien_jednostke
+from ..przynaleznosc import dostep_do_przynaleznosci, historia_przynaleznosci, zmien_jednostke
 from .schemas import PrzynaleznoscOut, ZmianaPrzynaleznosciIn
 from .zaleznosci import get_sesja, sprawdz_csrf, uzytkownik_sesji
 
 router = APIRouter(tags=["Przynaleznosc"])
-
-
-def _wlasny_profil(id_zolnierza: str, uzytkownik: Zolnierz) -> None:
-    if uzytkownik.id_zolnierza != id_zolnierza:
-        raise HTTPException(404, "Nie znaleziono żołnierza")
 
 
 def odpowiedz_przynaleznosci(s: Session, id_zolnierza: str) -> PrzynaleznoscOut:
@@ -58,7 +53,7 @@ def pokaz_przynaleznosc(
     s: Session = Depends(get_sesja),
     uzytkownik: Zolnierz = Depends(uzytkownik_sesji),
 ):
-    _wlasny_profil(id_zolnierza, uzytkownik)
+    dostep_do_przynaleznosci(s, id_zolnierza, uzytkownik)
     return odpowiedz_przynaleznosci(s, id_zolnierza)
 
 
@@ -71,15 +66,14 @@ def zmien_przynaleznosc(
     s: Session = Depends(get_sesja),
     uzytkownik: Zolnierz = Depends(uzytkownik_sesji),
 ):
-    _wlasny_profil(id_zolnierza, uzytkownik)
     sprawdz_csrf(request, token_csrf)
     zmien_jednostke(
         s,
         id_zolnierza,
         dane.id_jednostki,
         dane.data_od,
+        operator=uzytkownik,
         powod=dane.powod,
-        id_operatora=uzytkownik.id_zolnierza,
         zrodlo="api",
     )
     s.commit()

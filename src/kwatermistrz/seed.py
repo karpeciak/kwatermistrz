@@ -12,7 +12,7 @@ from decimal import Decimal
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .db import Base
+from .db import Base, teraz
 from .models import (
     Agent,
     Jednostka,
@@ -283,7 +283,7 @@ def _uzupelnij_historie_przynaleznosci(s: Session) -> None:
                 PrzynaleznoscJednostki(
                     id_zolnierza=zolnierz.id_zolnierza,
                     id_jednostki=zolnierz.id_jednostki,
-                    data_od=date.today(),
+                    data_od=teraz().date(),
                     zrodlo="seed",
                 )
             )

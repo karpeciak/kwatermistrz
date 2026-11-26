@@ -83,7 +83,7 @@ from ..podroze import (
     decyzja_do_uzgodnienia,
     zestawienie,
 )
-from ..przynaleznosc import historia_przynaleznosci, zmien_jednostke
+from ..przynaleznosc import dostep_do_przynaleznosci, historia_przynaleznosci, zmien_jednostke
 from ..sesje import CIASTECZKO, CZAS_SESJI, odczytaj_sesje, token_csrf, utworz_sesje
 from ..walidacja import parsuj_date, waliduj_wniosek
 
@@ -475,21 +475,30 @@ def _widok_przynaleznosci(
     request: Request,
     s: Session,
     uzytkownik: Zolnierz,
+    profil: Zolnierz,
     *,
     komunikat: str | None = None,
     blad: bool = False,
     formularz: dict | None = None,
 ):
-    wpisy = historia_przynaleznosci(s, uzytkownik.id_zolnierza)
+    wpisy = historia_przynaleznosci(s, profil.id_zolnierza)
     jednostki = list(s.scalars(select(Jednostka).order_by(Jednostka.nazwa)))
+    podwladni = list(
+        s.scalars(
+            select(Zolnierz).where(Zolnierz.id_przelozonego == uzytkownik.id_zolnierza).order_by(Zolnierz.imie_nazwisko)
+        )
+    )
     odpowiedz = strona(
         request,
         s,
         "przynaleznosc.html",
         uzytkownik,
-        aktualna=s.get(Jednostka, uzytkownik.id_jednostki),
+        profil=profil,
+        aktualna=s.get(Jednostka, profil.id_jednostki),
         historia=wpisy,
         jednostki=jednostki,
+        podwladni=podwladni,
+        moze_zmieniac=profil.id_przelozonego == uzytkownik.id_zolnierza,
         nazwy_jednostek={j.id_jednostki: j.nazwa for j in jednostki},
         komunikat=komunikat,
         blad=blad,
@@ -506,10 +515,9 @@ def przynaleznosc_zolnierza(
     s: Session = Depends(get_sesja),
     uzytkownik: Zolnierz = Depends(biezacy_uzytkownik),
 ):
-    if id_zolnierza != uzytkownik.id_zolnierza:
-        raise HTTPException(404, "Nie znaleziono żołnierza")
+    profil = dostep_do_przynaleznosci(s, id_zolnierza, uzytkownik)
     komunikat = "Zmieniono jednostkę i zapisano historię przypisania." if wynik == "zmieniono" else None
-    return _widok_przynaleznosci(request, s, uzytkownik, komunikat=komunikat)
+    return _widok_przynaleznosci(request, s, uzytkownik, profil, komunikat=komunikat)
 
 
 @router.post("/zolnierze/{id_zolnierza}/przynaleznosc", response_class=HTMLResponse)
@@ -522,8 +530,7 @@ def zmien_przynaleznosc_zolnierza(
     s: Session = Depends(get_sesja),
     uzytkownik: Zolnierz = Depends(biezacy_uzytkownik),
 ):
-    if id_zolnierza != uzytkownik.id_zolnierza:
-        raise HTTPException(404, "Nie znaleziono żołnierza")
+    profil = dostep_do_przynaleznosci(s, id_zolnierza, uzytkownik, zapis=True)
     formularz = {"id_jednostki": id_jednostki, "data_od": data_od, "powod": powod}
     try:
         dane = ZmianaPrzynaleznosciIn(id_jednostki=id_jednostki, data_od=data_od, powod=powod or None)
@@ -532,8 +539,8 @@ def zmien_przynaleznosc_zolnierza(
             id_zolnierza,
             dane.id_jednostki,
             dane.data_od,
+            operator=uzytkownik,
             powod=dane.powod,
-            id_operatora=uzytkownik.id_zolnierza,
             zrodlo="formularz",
         )
         s.commit()
@@ -542,6 +549,7 @@ def zmien_przynaleznosc_zolnierza(
             request,
             s,
             uzytkownik,
+            profil,
             komunikat="Sprawdź jednostkę, datę zmiany i długość powodu.",
             blad=True,
             formularz=formularz,
@@ -551,7 +559,7 @@ def zmien_przynaleznosc_zolnierza(
     except HTTPException as exc:
         s.rollback()
         odpowiedz = _widok_przynaleznosci(
-            request, s, uzytkownik, komunikat=str(exc.detail), blad=True, formularz=formularz
+            request, s, uzytkownik, profil, komunikat=str(exc.detail), blad=True, formularz=formularz
         )
         odpowiedz.status_code = exc.status_code
         return odpowiedz

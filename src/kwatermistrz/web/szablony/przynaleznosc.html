@@ -4,12 +4,25 @@
 <div class="naglowek-strony">
   <div>
     <h2>Przynależność do jednostki</h2>
+    <p>Profil: <strong>{{ profil.imie_nazwisko }}</strong></p>
     <p>Bieżąca jednostka: <strong>{{ aktualna.nazwa if aktualna else "Brak jednostki" }}</strong>{% if aktualna %}, {{ aktualna.miejscowosc }}{% endif %}</p>
   </div>
 </div>
 
 {% if komunikat %}<p class="komunikat{% if blad %} blad{% endif %}" role="{% if blad %}alert{% else %}status{% endif %}">{{ komunikat }}</p>{% endif %}
 
+{% if podwladni %}
+<nav aria-label="Bezpośredni podwładni">
+  <h3>Bezpośredni podwładni</h3>
+  <ul>
+    {% for podwladny in podwladni %}
+    <li><a href="/app/zolnierze/{{ podwladny.id_zolnierza }}/przynaleznosc">{{ podwladny.imie_nazwisko }}</a></li>
+    {% endfor %}
+  </ul>
+</nav>
+{% endif %}
+
+{% if moze_zmieniac %}
 <article>
   <h3>Zmień jednostkę</h3>
   <form method="post">
@@ -31,6 +44,7 @@
     <button type="submit">Zapisz zmianę jednostki</button>
   </form>
 </article>
+{% endif %}
 
 <section aria-labelledby="historia-przypisan">
   <h3 id="historia-przypisan">Historia przypisań</h3>
