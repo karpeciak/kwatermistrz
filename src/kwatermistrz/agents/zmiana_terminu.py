@@ -10,7 +10,9 @@ Obsługę wywołuje Agent Monitorujący (AG-08):
      (S22IT1S0P2-39); dotychczasowy obiekt ma pierwszeństwo, jeśli nadal spełnia warunki,
    - wzrost kosztu musi mieścić się w dostępnym budżecie jednostki,
    - elementy nowego planu jako `Przejazd`/`Zakwaterowanie` ze statusem `NOWY_PLAN`, porównanie planów
-     w `ZmianaTerminu`, zorganizowana delegacja wraca do etapu „zatwierdzony”, powiadomienie delegowanego,
+     w `ZmianaTerminu`, zorganizowana delegacja wraca do etapu „zatwierdzony”, powiadomienie delegowanego;
+     do potwierdzenia Koordynator widzi brak „potwierdzenie nowego planu” i nie uzna wyjazdu za zorganizowany,
+   - odwołany przejazd i niewybrane zamienniki z S22IT1S0P2-17 (stary termin) → `ANULOWANA`,
    - brak planu w limitach → `DO_UZGODNIENIA` i przekazanie przełożonemu.
 2. Delegowany potwierdza nowy plan albo zgłasza brak możliwości udziału (`/app/wnioski/{id}/nowy-plan`)
    → `decyzja.nowy_plan` → `zapisz_decyzje_planu`:
@@ -273,6 +275,11 @@ def przygotuj_nowy_plan(s: Session, k: Komunikat, ktx: Kontekst) -> None:
     s.add(zmiana)
     if d.status == Status.ZORGANIZOWANY:
         d.ustaw_status(Status.ZATWIERDZONY)  # dotychczasowy plan jest nieaktualny
+    # Styk z S22IT1S0P2-17: odwołany przejazd i jego zamienniki dotyczą starego terminu – nie można ich już wybrać
+    for r in przejazdy(s, d):
+        if r.status in (StatusRezerwacji.ODWOLANA, StatusRezerwacji.ALTERNATYWA):
+            r.status = StatusRezerwacji.ANULOWANA
+            r.powod_zmiany = f"{r.powod_zmiany or ''}\nAnulowano po zmianie terminu zadania".strip()
     termin_zadania = f"{k.dane['nowy_start']} – {k.dane['nowy_koniec']}"
 
     p = s.get(Przedsiewziecie, d.id_przedsiewziecia) if d.id_przedsiewziecia else None

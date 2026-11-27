@@ -17,6 +17,7 @@ from pomoc_sesji import zaloguj_z_csrf
 from sqlalchemy import select
 
 from kwatermistrz.agents import AGENCI
+from kwatermistrz.agents.koordynator import brakujace_elementy_organizacji
 from kwatermistrz.api.main import app, get_broker
 from kwatermistrz.db import sesja, teraz
 from kwatermistrz.messaging import Komunikat, Typ
@@ -383,3 +384,51 @@ def test_api_nowego_planu(klient, broker):
     assert klient.post(f"/delegacje/{DEL}/decyzja-nowego-planu", json={"potwierdz": True}).status_code == 202
     zaloguj_z_csrf(klient, PRZELOZONY)
     assert klient.post(f"/delegacje/{DEL}/decyzja-nowego-planu", json={"potwierdz": True}).status_code == 403
+
+
+# ---------------------------------------------------------------- uwagi z przeglądu PR #33
+
+
+def zadania_koordynatora(broker) -> list[str]:
+    koordynator = AGENCI["koordynator"](broker)
+    return [k.id_delegacji for k, _funkcja, _operacja in koordynator.zadania_cykliczne()]
+
+
+def test_cykl_koordynatora_nie_przywraca_organizacji_przed_potwierdzeniem(klient, broker):
+    zmien_termin(klient, broker)
+
+    assert DEL not in zadania_koordynatora(broker)  # stare rezerwacje „wybrana” nie dają kompletu organizacji
+    with sesja() as s:
+        braki = brakujace_elementy_organizacji(s, s.get(Delegacja, DEL))
+    assert braki == ["potwierdzenie nowego planu"]
+    assert delegacja().status == Status.ZATWIERDZONY
+
+    zdecyduj(broker, potwierdz=True)
+
+    assert delegacja().status == Status.ZORGANIZOWANY
+    assert DEL not in zadania_koordynatora(broker)
+
+
+def test_odwolany_przejazd_i_zamienniki_z_poprzedniego_terminu_sa_anulowane(klient, broker):
+    with sesja() as s:  # S22IT1S0P2-17: przewoźnik odwołał przejazd tam, czeka zamiennik na stary termin
+        tam = s.scalar(select(Przejazd).where(Przejazd.id_delegacji == DEL, Przejazd.kierunek == "Tam"))
+        tam.status = StatusRezerwacji.ODWOLANA
+        s.add(
+            Przejazd(
+                id_delegacji=DEL,
+                kierunek="Tam",
+                srodek_transportu="kolej",
+                data_przejazdu=START,
+                id_polaczenia="POL-02",
+                koszt=Decimal("55.00"),
+                status=StatusRezerwacji.ALTERNATYWA,
+            )
+        )
+        s.get(Delegacja, DEL).status = Status.ZATWIERDZONY
+
+    zmien_termin(klient, broker)
+    zdecyduj(broker, potwierdz=True)
+
+    assert przejazdy(StatusRezerwacji.ODWOLANA) == [] and przejazdy(StatusRezerwacji.ALTERNATYWA) == []
+    wybrane = przejazdy(StatusRezerwacji.WYBRANA)
+    assert sorted((r.kierunek, r.data_przejazdu) for r in wybrane) == [("Powrót", NOWY_KONIEC), ("Tam", NOWY_START)]
