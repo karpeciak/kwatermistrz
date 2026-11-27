@@ -29,7 +29,9 @@ from ..models import (
     Status,
     StatusRezerwacji,
     StatusRozliczenia,
+    StatusZmianyTerminu,
     Zakwaterowanie,
+    ZmianaTerminu,
     Zolnierz,
 )
 from .base import Agent, Kontekst, pobierz_delegacje
@@ -56,10 +58,14 @@ class FaktyStatusu:
     potrzeba_zakwaterowania: bool
     ma_zakwaterowanie: bool
     status_rozliczenia: str | None
+    # S22IT1S0P2-41: po zmianie terminu zadania nowy plan czeka na potwierdzenie delegowanego
+    oczekuje_nowy_plan: bool = False
 
     @property
     def brakujace_elementy_organizacji(self) -> tuple[str, ...]:
         brakuje = []
+        if self.oczekuje_nowy_plan:
+            brakuje.append("potwierdzenie nowego planu")
         if not self.ma_polecenie:
             brakuje.append("polecenie wyjazdu")
         if not {"Tam", "Powrót"} <= set(self.wybrane_kierunki):
@@ -179,6 +185,15 @@ def pobierz_fakty_statusu(s: Session, d: Delegacja) -> FaktyStatusu:
         is not None
     )
     status_rozliczenia = s.scalar(select(Rozliczenie.status).where(Rozliczenie.id_delegacji == d.id_delegacji))
+    oczekuje_nowy_plan = (
+        s.scalar(
+            select(ZmianaTerminu.id_zmiany).where(
+                ZmianaTerminu.id_delegacji == d.id_delegacji,
+                ZmianaTerminu.status == StatusZmianyTerminu.OCZEKUJE,
+            )
+        )
+        is not None
+    )
     return FaktyStatusu(
         id_delegacji=d.id_delegacji,
         status=d.status,
@@ -189,6 +204,7 @@ def pobierz_fakty_statusu(s: Session, d: Delegacja) -> FaktyStatusu:
         potrzeba_zakwaterowania=d.potrzeba_zakwaterowania,
         ma_zakwaterowanie=ma_zakwaterowanie,
         status_rozliczenia=status_rozliczenia,
+        oczekuje_nowy_plan=oczekuje_nowy_plan,
     )
 
 

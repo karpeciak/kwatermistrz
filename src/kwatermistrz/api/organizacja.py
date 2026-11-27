@@ -13,7 +13,13 @@ Zrobione:
   zarezerwowanego przejazdu → `Typ.ODWOLANIE_PRZEJAZDU`; `GET /delegacje/{id}/przejazdy-alternatywne` – propozycje
   zastępcze; `POST /delegacje/{id}/wybor-przejazdu-alternatywnego` – wybór albo odrzucenie wszystkich
   → `Typ.WYBOR_PRZEJAZDU_ALTERNATYWNEGO`.
+- S22IT1S0P2-41: `POST /przedsiewziecia/{id}/termin` – organizator zmienia termin zadania → `Typ.ZMIANA_TERMINU`
+  dla każdej zaplanowanej delegacji; `GET /delegacje/{id}/nowy-plan` – porównanie dotychczasowego i nowego planu;
+  `POST /delegacje/{id}/decyzja-nowego-planu` – potwierdzenie albo brak możliwości udziału
+  → `Typ.DECYZJA_NOWEGO_PLANU`.
 """
+
+from datetime import date, time
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field, model_validator
@@ -21,12 +27,14 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..agents.zmiana_przejazdu import ETAPY_PRZED_PODROZA, przejazdy_alternatywne
+from ..agents.zmiana_terminu import delegacje_przedsiewziecia, oczekujaca_zmiana, ostatnia_zmiana
 from ..db import teraz
 from ..messaging import Broker, Komunikat, Typ
 from ..models import (
     ObiektZakwaterowania,
     Polaczenie,
     PolecenieWyjazdu,
+    Przedsiewziecie,
     Przejazd,
     Status,
     StatusRezerwacji,
@@ -325,3 +333,140 @@ async def wybierz_zakwaterowanie(
     dane = {"id_zakwaterowania": z.id_zakwaterowania, "uzasadnienie": uzasadnienie or None}
     await broker.publikuj(Komunikat(typ=Typ.WYBOR_ZAKWATEROWANIA, id_delegacji=id_delegacji, dane=dane))
     return {"przyjeto": True}
+
+
+# ---------------------------------------------------------------- S22IT1S0P2-41: zmiana terminu zadania
+
+
+class ZmianaTerminuIn(BaseModel):
+    """Nowy termin przedsięwzięcia podany przez organizatora zadania."""
+
+    data_rozpoczecia: date
+    data_zakonczenia: date
+    godzina_rozpoczecia: time | None = None
+    powod: str | None = Field(None, max_length=500)
+
+    @model_validator(mode="after")
+    def sprawdz(self):
+        if self.data_zakonczenia < self.data_rozpoczecia:
+            raise ValueError("Data zakończenia nie może poprzedzać daty rozpoczęcia")
+        return self
+
+
+@router.post("/przedsiewziecia/{id_przedsiewziecia}/termin", status_code=202)
+async def zmiana_terminu_zadania(
+    id_przedsiewziecia: str,
+    zmiana: ZmianaTerminuIn,
+    s: Session = Depends(get_sesja),
+    broker: Broker = Depends(get_broker),
+):
+    """Organizator zmienia termin zadania (integracja symulowana, jak komunikat przewoźnika w S22IT1S0P2-17).
+
+    Agent Monitorujący przygotuje nowy plan każdej zaplanowanej delegacji i poprosi delegowanego o potwierdzenie.
+    """
+    p = s.get(Przedsiewziecie, id_przedsiewziecia)
+    if p is None:
+        raise HTTPException(404, "Nie znaleziono przedsięwzięcia")
+    if zmiana.data_rozpoczecia <= teraz().date():
+        raise HTTPException(422, "Nowy termin musi rozpoczynać się w przyszłości")
+    godzina = zmiana.godzina_rozpoczecia or p.godzina_rozpoczecia
+    if (zmiana.data_rozpoczecia, zmiana.data_zakonczenia, godzina) == (
+        p.data_rozpoczecia,
+        p.data_zakonczenia,
+        p.godzina_rozpoczecia,
+    ):
+        raise HTTPException(409, "Termin zadania się nie zmienił")
+    dane = {
+        "stary_start": p.data_rozpoczecia.isoformat(),
+        "stary_koniec": p.data_zakonczenia.isoformat(),
+        "nowy_start": zmiana.data_rozpoczecia.isoformat(),
+        "nowy_koniec": zmiana.data_zakonczenia.isoformat(),
+        "powod": (zmiana.powod or "").strip() or None,
+    }
+    if p.pierwotna_data_zakonczenia is None:
+        p.pierwotna_data_zakonczenia = p.data_zakonczenia
+    p.data_rozpoczecia, p.data_zakonczenia, p.godzina_rozpoczecia = (
+        zmiana.data_rozpoczecia,
+        zmiana.data_zakonczenia,
+        godzina,
+    )
+    delegacje = [d.id_delegacji for d in delegacje_przedsiewziecia(s, id_przedsiewziecia)]
+    s.commit()  # agent musi widzieć nowy termin, zanim dostanie zdarzenie
+    for id_delegacji in delegacje:
+        await broker.publikuj(Komunikat(typ=Typ.ZMIANA_TERMINU, id_delegacji=id_delegacji, dane=dane))
+    return {"przyjeto": True, "delegacje": delegacje}
+
+
+def porownanie_planow(s: Session, d) -> dict | None:
+    """Ostatnia zmiana terminu delegacji z porównaniem planów – wspólne dla API i ekranu."""
+    z = ostatnia_zmiana(s, d)
+    if z is None:
+        return None
+    return {
+        "id_zmiany": z.id_zmiany,
+        "status": z.status,
+        "powod": z.powod,
+        "data_zgloszenia": z.data_zgloszenia,
+        "dotychczasowy": z.stary_plan,
+        "nowy": z.nowy_plan,
+        "roznica_kosztu": z.roznica_kosztu,
+        "uzasadnienie": z.uzasadnienie,
+    }
+
+
+@router.get("/delegacje/{id_delegacji}/nowy-plan")
+def nowy_plan(
+    id_delegacji: str,
+    s: Session = Depends(get_sesja),
+    uzytkownik: Zolnierz = Depends(uzytkownik_sesji),
+):
+    wynik = porownanie_planow(s, dostep_do_podrozy(s, id_delegacji, uzytkownik))
+    if wynik is None:
+        raise HTTPException(404, "Termin zadania tej delegacji nie był zmieniany")
+    return wynik
+
+
+class DecyzjaPlanuIn(BaseModel):
+    potwierdz: bool
+    uzasadnienie: str = Field("", max_length=500)
+
+    @model_validator(mode="after")
+    def sprawdz(self):
+        if not self.potwierdz and not self.uzasadnienie.strip():
+            raise ValueError("Podaj przyczynę braku możliwości udziału w nowym terminie")
+        return self
+
+
+async def przyjmij_decyzje_planu(
+    s: Session, broker: Broker, id_delegacji: str, u: Zolnierz, decyzja: DecyzjaPlanuIn
+) -> dict:
+    d = dostep_do_podrozy(s, id_delegacji, u)
+    if u.id_zolnierza != d.id_zolnierza:
+        raise HTTPException(403, "O nowym planie decyduje delegowany")
+    if oczekujaca_zmiana(s, d) is None:
+        raise HTTPException(409, "Brak nowego planu oczekującego na decyzję")
+    await broker.publikuj(
+        Komunikat(
+            typ=Typ.DECYZJA_NOWEGO_PLANU,
+            id_delegacji=id_delegacji,
+            dane={
+                "potwierdz": decyzja.potwierdz,
+                "uzasadnienie": decyzja.uzasadnienie.strip(),
+                "id_osoby": u.id_zolnierza,
+            },
+        )
+    )
+    return {"przyjeto": True, "komunikat": "Decyzja przekazana do Agenta Monitorującego"}
+
+
+@router.post("/delegacje/{id_delegacji}/decyzja-nowego-planu", status_code=202)
+async def decyzja_nowego_planu(
+    id_delegacji: str,
+    decyzja: DecyzjaPlanuIn,
+    request: Request,
+    s: Session = Depends(get_sesja),
+    broker: Broker = Depends(get_broker),
+    uzytkownik: Zolnierz = Depends(uzytkownik_sesji),
+):
+    sprawdz_csrf(request, request.headers.get("X-CSRF-Token"))
+    return await przyjmij_decyzje_planu(s, broker, id_delegacji, uzytkownik, decyzja)

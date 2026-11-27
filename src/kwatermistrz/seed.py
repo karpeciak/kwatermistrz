@@ -302,7 +302,13 @@ def zaladuj_dane_poczatkowe(s: Session) -> None:
     _uzupelnij(s, Zolnierz, ZOLNIERZE, nie_aktualizuj={"id_jednostki"})
     s.get(Zolnierz, "ZOL-001").id_zastepcy = "ZOL-002"
     _uzupelnij_historie_przynaleznosci(s)
-    _uzupelnij(s, Przedsiewziecie, PRZEDSIEWZIECIA)
+    # S22IT1S0P2-41: termin zmieniony przez organizatora nie wraca do wartości z danych startowych
+    _uzupelnij(
+        s,
+        Przedsiewziecie,
+        PRZEDSIEWZIECIA,
+        nie_aktualizuj={"data_rozpoczecia", "data_zakonczenia", "pierwotna_data_zakonczenia", "godzina_rozpoczecia"},
+    )
     _uzupelnij(s, ObiektZakwaterowania, OBIEKTY)
     _uzupelnij(s, Polaczenie, POLACZENIA)
     s.flush()
