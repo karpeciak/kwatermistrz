@@ -77,7 +77,7 @@ def test_migracja_bazy_sprzed_sprintu_1_zachowuje_dane(tmp_path):
     assert od_kiedy is not None
     assert id_jednostki == "JW-1"
     assert historia[0] == "JW-1" and historia[1] is not None and historia[2] is None and historia[3] == "migracja"
-    assert wersja == "0006"  # ostatnia migracja: S22IT1S0P2-41 zmiana terminu
+    assert wersja == "0007"  # ostatnia migracja: S22IT1S0P2-42 zlecenia agentów
 
 
 def test_downgrade_historii_nie_uszkadza_innych_tabel(tmp_path):

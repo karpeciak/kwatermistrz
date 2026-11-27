@@ -43,6 +43,8 @@ class Typ:
     # Zmiana przejazdu po odwołaniu przez przewoźnika (S22IT1S0P2-17)
     ODWOLANIE_PRZEJAZDU = "zdarzenie.odwolanie_przejazdu"
     WYBOR_PRZEJAZDU_ALTERNATYWNEGO = "wybor.przejazd_alternatywny"
+    # Opóźnienie realizacji zlecenia – oczekiwanie albo rezygnacja delegowanego (S22IT1S0P2-42)
+    DECYZJA_OCZEKIWANIA = "decyzja.oczekiwanie_na_zlecenie"
     # Aktualizacja planu delegacji po zmianie terminu zadania (S22IT1S0P2-41)
     ZMIANA_TERMINU = "zdarzenie.zmiana_terminu"
     DECYZJA_NOWEGO_PLANU = "decyzja.nowy_plan"

@@ -15,6 +15,39 @@
   <p class="komunikat ostrzezenie" role="status">Po zmianie terminu zadania sprawę delegacji prowadzi przełożony.
     <a href="/app/wnioski/{{ d.id_delegacji }}/nowy-plan">Szczegóły zmiany</a></p>
   {% endif %}
+  {# S22IT1S0P2-42 (163): opóźnienie realizacji zlecenia transportu z przewidywanym terminem #}
+  {% if zlecenie_transportu and zlecenie_transportu.status in ("opóźnione", "oczekiwanie potwierdzone") %}
+  <div class="komunikat ostrzezenie" role="status">
+    <p><strong>Przygotowanie transportu trwa dłużej niż zwykle.</strong>
+      Przekroczono dopuszczalny czas realizacji zlecenia – system ponowił je ({{ zlecenie_transportu.liczba_ponowien }}
+      {{ "raz" if zlecenie_transportu.liczba_ponowien == 1 else "razy" }}).
+      Przewidywany termin odpowiedzi: <strong>{{ zlecenie_transportu.przewidywany_termin | czas }}</strong>.</p>
+    {% if zlecenie_transportu.status == "opóźnione" %}
+    <form method="post" action="/app/wnioski/{{ d.id_delegacji }}/zlecenie-transportu">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <input type="hidden" name="czekam" value="tak">
+      <button type="submit">Poczekam na realizację</button>
+    </form>
+    <details>
+      <summary>Rezygnuję z oczekiwania</summary>
+      <form method="post" action="/app/wnioski/{{ d.id_delegacji }}/zlecenie-transportu">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <input type="hidden" name="czekam" value="nie">
+        <label for="powod_rezygnacji">Przyczyna <small>(opcjonalnie)</small>
+          <input id="powod_rezygnacji" name="powod" maxlength="500">
+        </label>
+        <small>Zlecenie zostanie wycofane, a transport zorganizuje osoba odpowiedzialna za organizację delegacji.</small>
+        <button type="submit" class="secondary">Wycofaj zlecenie</button>
+      </form>
+    </details>
+    {% else %}
+    <p><small>Potwierdzono oczekiwanie – system poinformuje, gdy warianty będą gotowe.</small></p>
+    {% endif %}
+  </div>
+  {% elif zlecenie_transportu and zlecenie_transportu.status == "wycofane" %}
+  <p class="komunikat ostrzezenie" role="status">Zlecenie przygotowania transportu wycofano
+    ({{ zlecenie_transportu.incydent }}). Transport zorganizuje osoba odpowiedzialna za organizację delegacji.</p>
+  {% endif %}
   {% if odwolany_przejazd %}
   <p class="komunikat ostrzezenie" role="status">Przewoźnik odwołał zarezerwowany przejazd.
     <a href="/app/wnioski/{{ d.id_delegacji }}/przejazd-alternatywny">Wybierz przejazd alternatywny</a></p>
