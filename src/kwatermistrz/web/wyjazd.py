@@ -28,8 +28,10 @@ from ..agents.zmiana_przejazdu import dostepny_budzet, odwolane_przejazdy, przej
 from ..api.organizacja import (
     DecyzjaOdstepstwaIn,
     DecyzjaPlanuIn,
+    OczekiwanieIn,
     WyborAlternatywyIn,
     porownanie_planow,
+    przyjmij_decyzje_oczekiwania,
     przyjmij_decyzje_odstepstwa,
     przyjmij_decyzje_planu,
     przyjmij_wybor,
@@ -594,3 +596,32 @@ async def decyzja_o_odstepstwie(
             request, s, "odstepstwo.html", uzytkownik, **kontekst, komunikat=komunikat, blad=True, uwagi=uzasadnienie
         )
     return RedirectResponse(f"/app/wnioski/{id_delegacji}/odstepstwo?wynik={WYNIK_ODSTEPSTWO}", status_code=303)
+
+
+# ---------------------------------------------------------------- opóźnienie realizacji zlecenia (S22IT1S0P2-163)
+
+
+@router.post("/wnioski/{id_delegacji}/zlecenie-transportu", response_class=HTMLResponse)
+async def decyzja_o_oczekiwaniu(
+    id_delegacji: str,
+    request: Request,
+    czekam: str = Form(""),
+    powod: str = Form(""),
+    s: Session = Depends(get_sesja),
+    broker: Broker = Depends(get_broker),
+    uzytkownik: Zolnierz = Depends(biezacy_uzytkownik),
+):
+    """Krok 3: delegowany czeka na realizację zlecenia albo rezygnuje (3a) – resztę wykonuje Agent Monitorujący."""
+    d = delegacja_do_organizacji(s, id_delegacji, uzytkownik)
+    formularz = await request.form()
+    sprawdz_csrf(request, request.headers.get("X-CSRF-Token") or formularz.get("csrf"))
+    try:
+        await przyjmij_decyzje_oczekiwania(
+            s, broker, d.id_delegacji, uzytkownik, OczekiwanieIn(czekam=czekam == "tak", powod=powod)
+        )
+    except HTTPException as e:
+        if e.status_code != 409:
+            raise
+        return RedirectResponse(f"/app/wnioski/{id_delegacji}", status_code=303)
+    wynik = "zlecenie-oczekiwanie" if czekam == "tak" else "zlecenie-wycofane"
+    return RedirectResponse(f"/app/wnioski/{id_delegacji}?wynik={wynik}", status_code=303)

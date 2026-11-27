@@ -20,6 +20,8 @@ Zrobione:
 - S22IT1S0P2-40: `POST /delegacje/{id}/wybor-obiektu` – wybór obiektu z katalogu z kontrolą limitu noclegowego
   → `Typ.WYBOR_OBIEKTU`; `POST /delegacje/{id}/decyzja-odstepstwa` – przełożony zgadza się na odstępstwo od limitu
   albo odmawia → `Typ.DECYZJA_ODSTEPSTWA`.
+- S22IT1S0P2-42: `GET /delegacje/{id}/zlecenie-transportu` – stan opóźnionego zlecenia (ponowienia, przewidywany
+  termin); `POST /delegacje/{id}/oczekiwanie-na-zlecenie` – oczekiwanie albo rezygnacja → `Typ.DECYZJA_OCZEKIWANIA`.
 """
 
 from datetime import date, time
@@ -30,6 +32,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..agents.limit_noclegu import katalog_obiektow, propozycje_w_limicie, przelozony, wniosek_o_odstepstwo
+from ..agents.opoznienia import W_TOKU, zlecenie_transportu
 from ..agents.zmiana_przejazdu import ETAPY_PRZED_PODROZA, przejazdy_alternatywne
 from ..agents.zmiana_terminu import delegacje_przedsiewziecia, oczekujaca_zmiana, ostatnia_zmiana
 from ..db import teraz
@@ -557,3 +560,62 @@ async def decyzja_nowego_planu(
 ):
     sprawdz_csrf(request, request.headers.get("X-CSRF-Token"))
     return await przyjmij_decyzje_planu(s, broker, id_delegacji, uzytkownik, decyzja)
+
+
+# ---------------------------------------------------------------- S22IT1S0P2-42: opóźnienie realizacji zlecenia
+
+
+@router.get("/delegacje/{id_delegacji}/zlecenie-transportu")
+def stan_zlecenia_transportu(
+    id_delegacji: str,
+    s: Session = Depends(get_sesja),
+    uzytkownik: Zolnierz = Depends(uzytkownik_sesji),
+):
+    z = zlecenie_transportu(s, dostep_do_podrozy(s, id_delegacji, uzytkownik))
+    if z is None:
+        raise HTTPException(404, "Zlecenie transportu tej delegacji nie przekroczyło czasu realizacji")
+    return {
+        "status": z.status,
+        "data_zlecenia": z.data_zlecenia,
+        "liczba_ponowien": z.liczba_ponowien,
+        "przewidywany_termin": z.przewidywany_termin,
+        "data_zakonczenia": z.data_zakonczenia,
+        "incydent": z.incydent,
+    }
+
+
+class OczekiwanieIn(BaseModel):
+    czekam: bool
+    powod: str = Field("", max_length=500)
+
+
+async def przyjmij_decyzje_oczekiwania(
+    s: Session, broker: Broker, id_delegacji: str, u: Zolnierz, decyzja: OczekiwanieIn
+) -> dict:
+    d = dostep_do_podrozy(s, id_delegacji, u)
+    if u.id_zolnierza != d.id_zolnierza:
+        raise HTTPException(403, "O oczekiwaniu na realizację zlecenia decyduje delegowany")
+    z = zlecenie_transportu(s, d)
+    if z is None or z.status not in W_TOKU:
+        raise HTTPException(409, "Brak opóźnionego zlecenia oczekującego na decyzję")
+    await broker.publikuj(
+        Komunikat(
+            typ=Typ.DECYZJA_OCZEKIWANIA,
+            id_delegacji=id_delegacji,
+            dane={"czekam": decyzja.czekam, "powod": decyzja.powod.strip(), "id_osoby": u.id_zolnierza},
+        )
+    )
+    return {"przyjeto": True, "komunikat": "Decyzja przekazana do Agenta Monitorującego"}
+
+
+@router.post("/delegacje/{id_delegacji}/oczekiwanie-na-zlecenie", status_code=202)
+async def oczekiwanie_na_zlecenie(
+    id_delegacji: str,
+    decyzja: OczekiwanieIn,
+    request: Request,
+    s: Session = Depends(get_sesja),
+    broker: Broker = Depends(get_broker),
+    uzytkownik: Zolnierz = Depends(uzytkownik_sesji),
+):
+    sprawdz_csrf(request, request.headers.get("X-CSRF-Token"))
+    return await przyjmij_decyzje_oczekiwania(s, broker, id_delegacji, uzytkownik, decyzja)
