@@ -47,6 +47,7 @@ from ..podroze import (
 )
 from ..przynaleznosc import jednostka_delegacji
 from .base import Agent, BladProcesu, Kontekst, pobierz_delegacje
+from .opoznienia import zlecenie_wycofane
 
 
 def zablokuj_delegacje(s: Session, id_delegacji: str | None) -> Delegacja:
@@ -75,6 +76,9 @@ class AgentTransportu(Agent):
             raise BladProcesu("S22IT1S0P2-27: delegacja nie jest zatwierdzona")
         if przejazdy(s, d):
             ktx.opis = "Warianty już przygotowano — pominięto ponowienie"
+            return
+        if zlecenie_wycofane(s, d):  # S22IT1S0P2-42 (4a): delegowany zrezygnował z oczekiwania na to zlecenie
+            ktx.opis = "Zlecenie wycofane po przekroczeniu czasu realizacji — sprawę prowadzi osoba odpowiedzialna"
             return
         if not d.data_wyjazdu or not d.data_powrotu or not d.miejsce_docelowe:
             ktx.ostrzezenie("S22IT1S0P2-27: uzupełnij daty i miejsce podróży")
