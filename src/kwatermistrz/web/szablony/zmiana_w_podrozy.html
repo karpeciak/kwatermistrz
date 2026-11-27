@@ -1,0 +1,74 @@
+{% extends "baza.html" %}
+{% block tytul %}Zmiana w podróży – {{ d.id_delegacji }}{% endblock %}
+{% block tresc %}
+<p><a href="/app/wnioski/{{ d.id_delegacji }}">← Wniosek {{ d.id_delegacji }}</a></p>
+
+<div class="naglowek-strony">
+  <h2>Zmiany w podróży</h2>
+  <span class="status duzy {{ d.status | klasa_statusu }}">{{ d.status }}</span>
+</div>
+
+{% if komunikat %}
+<p class="{{ 'bledy' if blad else 'komunikat' }}" role="{{ 'alert' if blad else 'status' }}">{{ komunikat }}</p>
+{% endif %}
+
+{# S22IT1S0P2-34 (149): powiadomienie o zmianie z rozwiązaniem zastępczym i terminem odpowiedzi #}
+{% if oczekujaca %}
+<article class="komunikat ostrzezenie">
+  <header><strong>Dostawca zgłosił zmianę: {{ oczekujaca.rodzaj_zdarzenia }}</strong></header>
+  <dl class="podsumowanie">
+    <dt>Usługa objęta zmianą</dt><dd>{{ oczekujaca.usluga_objeta_zmiana }}</dd>
+    <dt>Data zdarzenia</dt><dd>{{ oczekujaca.data_zdarzenia.strftime('%d.%m.%Y') }}</dd>
+    <dt>Rozwiązanie zastępcze</dt><dd><strong>{{ oczekujaca.rozwiazanie_zastepcze }}</strong></dd>
+    <dt>Koszt</dt><dd>{{ oczekujaca.koszt | kwota }}</dd>
+    <dt>Zgodność z limitem</dt><dd>{{ oczekujaca.zgodnosc_z_limitem }}</dd>
+    <dt>Termin odpowiedzi</dt><dd>{{ oczekujaca.termin_odpowiedzi | czas }}</dd>
+  </dl>
+  {% if uzytkownik.id_zolnierza == d.id_zolnierza %}
+  <p><small>Bez odpowiedzi w terminie sprawę przejmie osoba dyżurna jednostki.</small></p>
+  <form method="post" action="/app/wnioski/{{ d.id_delegacji }}/zmiana-w-podrozy">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <input type="hidden" name="id_zmiany" value="{{ oczekujaca.id_zmiany }}">
+    <label for="uzasadnienie">Uwagi <small>(opcjonalnie)</small>
+      <textarea id="uzasadnienie" name="uzasadnienie" rows="2" maxlength="500"></textarea>
+    </label>
+    <div role="group">
+      <button type="submit" name="odpowiedz" value="akceptuje">Akceptuję rozwiązanie zastępcze</button>
+      <button type="submit" name="odpowiedz" value="odrzucam" class="secondary">Odrzucam – przekaż osobie dyżurnej</button>
+    </div>
+  </form>
+  {% else %}
+  <p>Na rozwiązanie zastępcze odpowiada delegowany.</p>
+  {% endif %}
+</article>
+{% endif %}
+
+{# Historia zmian delegacji – warunek końcowy: zmiana udokumentowana #}
+{% if zmiany %}
+<h3>Historia zmian</h3>
+<div class="overflow-auto">
+  <table>
+    <thead>
+      <tr>
+        <th scope="col">Zdarzenie</th>
+        <th scope="col">Usługa</th>
+        <th scope="col">Rozwiązanie zastępcze</th>
+        <th scope="col">Status</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for z in zmiany %}
+      <tr>
+        <td class="bez-lamania">{{ z.rodzaj_zdarzenia }}<br><small>{{ z.data_zdarzenia.strftime('%d.%m.%Y') }}</small></td>
+        <td>{{ z.usluga_objeta_zmiana }}</td>
+        <td>{{ z.rozwiazanie_zastepcze or '–' }}{% if z.koszt is not none %}<br><small>{{ z.koszt | kwota }}, zgodność z limitem: {{ z.zgodnosc_z_limitem }}</small>{% endif %}</td>
+        <td>{{ z.status }}{% if z.id_dyzurnego %}<br><small>osoba dyżurna: {{ z.id_dyzurnego }}</small>{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<p>W tej delegacji nie zgłoszono zmian w podróży.</p>
+{% endif %}
+{% endblock %}

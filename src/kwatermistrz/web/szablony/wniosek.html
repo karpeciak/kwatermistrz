@@ -3,6 +3,16 @@
 {% block tresc %}
 <p><a href="/app/pulpit">← Moje wnioski</a></p>
 {% include "_stan_wniosku.html" %}
+{# S22IT1S0P2-34: zmiana usługi w trakcie podróży zgłoszona przez dostawcę #}
+{% if zmiana_w_podrozy and d.status == "w trakcie" %}
+{% if zmiana_w_podrozy.status == "oczekuje na odpowiedź" and uzytkownik.id_zolnierza == d.id_zolnierza %}
+<p class="komunikat ostrzezenie" role="status"><strong>Zmiana w podróży:</strong> {{ zmiana_w_podrozy.rodzaj_zdarzenia }} usługi
+  ({{ zmiana_w_podrozy.usluga }}). System przygotował rozwiązanie zastępcze.
+  <a href="/app/wnioski/{{ d.id_delegacji }}/zmiana-w-podrozy">Sprawdź i odpowiedz</a></p>
+{% else %}
+<p><a href="/app/wnioski/{{ d.id_delegacji }}/zmiana-w-podrozy">Zmiany w podróży</a></p>
+{% endif %}
+{% endif %}
 {# S22IT1S0P2-45, -99: organizacja wyjazdu po zatwierdzeniu – wybór przejazdu i zakwaterowania #}
 {% if d.status in ("zatwierdzony", "zorganizowany") and uzytkownik.id_zolnierza == d.id_zolnierza %}
 <article>

@@ -28,6 +28,7 @@ from sqlalchemy.orm import Session
 from ..agents.koordynator import DECYZJA_SYNCHRONIZACJI, KONTROLA_STATUSU, Koordynator, brakujace_elementy_organizacji
 from ..agents.opoznienia import zlecenie_transportu
 from ..agents.zmiana_terminu import ostatnia_zmiana
+from ..agents.zmiana_w_podrozy import zmiany_uslug
 from ..api.organizacja import przyjmij_wariant, przyjmij_wybor
 from ..api.rozliczenia import (
     KOMUNIKAT_PRZYJETY,
@@ -76,6 +77,7 @@ from ..models import (
     StatusRezerwacji,
     StatusZlecenia,
     StatusZmianyTerminu,
+    StatusZmianyUslugi,
     Zakwaterowanie,
     Zolnierz,
 )
@@ -900,6 +902,16 @@ def dane_wniosku(s: Session, id_delegacji: str, uzytkownik: Zolnierz) -> dict:
             odswiezaj = False
         else:
             oczekiwanie = "Oczekiwanie na przygotowanie wariantów podróży."
+    zmiana_w_podrozy = next(iter(zmiany_uslug(s, d)), None)  # S22IT1S0P2-34: ostatnia zmiana w podróży
+    if (
+        d.status == Status.W_TRAKCIE
+        and zmiana_w_podrozy is not None
+        and zmiana_w_podrozy.status == StatusZmianyUslugi.OCZEKUJE
+    ):
+        oczekiwanie = (
+            f"Zmiana w podróży ({zmiana_w_podrozy.rodzaj_zdarzenia}) – oczekiwanie na Twoją odpowiedź na rozwiązanie "
+            f"zastępcze do {czas_lokalny(zmiana_w_podrozy.termin_odpowiedzi)}."
+        )
     etap = ETAP_STATUSU_BOCZNEGO.get(d.status, d.status)
     przypomnienie = next((o for o in operacje if o.operacja == OPERACJA_PRZYPOMNIENIA), None)
     przekazanie = next((o for o in operacje if o.operacja == OPERACJA_PRZEKAZANIA), None)
@@ -927,6 +939,7 @@ def dane_wniosku(s: Session, id_delegacji: str, uzytkownik: Zolnierz) -> dict:
         )
         is not None,
         zmiana_terminu=zmiana_terminu,
+        zmiana_w_podrozy=zmiana_w_podrozy,
         zlecenie_transportu=zlecenie,
         odstepstwo_noclegu=s.scalar(  # S22IT1S0P2-40: link do decyzji przełożonego o odstępstwie
             select(Zakwaterowanie.id_zakwaterowania).where(

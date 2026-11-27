@@ -24,6 +24,10 @@ Zrobione:
   termin); `POST /delegacje/{id}/oczekiwanie-na-zlecenie` – oczekiwanie albo rezygnacja → `Typ.DECYZJA_OCZEKIWANIA`.
 - S22IT1S0P2-15: `POST /delegacje/{id}/odrzucenie-zakwaterowania` – delegowany odrzuca wszystkie obiekty
   → `Typ.ODRZUCENIE_ZAKWATEROWANIA` (sprawa u osoby odpowiedzialnej).
+- S22IT1S0P2-34: `POST /zmiany-uslug` – dostawca (przewoźnik, obiekt noclegowy) zgłasza zmianę usługi; system
+  identyfikuje delegacje w trakcie realizacji → `Typ.ZMIANA_USLUGI` dla każdej; `GET /delegacje/{id}/zmiany-w-podrozy`
+  – historia zmian z rozwiązaniami zastępczymi; `POST /delegacje/{id}/odpowiedz-na-zmiane` – akceptacja albo
+  odrzucenie rozwiązania → `Typ.DECYZJA_ZMIANY_USLUGI`.
 """
 
 from datetime import date, time
@@ -44,6 +48,13 @@ from ..agents.limit_noclegu import (
 from ..agents.opoznienia import W_TOKU, zlecenie_transportu
 from ..agents.zmiana_przejazdu import ETAPY_PRZED_PODROZA, przejazdy_alternatywne
 from ..agents.zmiana_terminu import delegacje_przedsiewziecia, oczekujaca_zmiana, ostatnia_zmiana
+from ..agents.zmiana_w_podrozy import (
+    RODZAJE_ZDARZEN,
+    USLUGI,
+    identyfikuj_delegacje,
+    opis_uslugi,
+    zmiany_uslug,
+)
 from ..db import teraz
 from ..messaging import Broker, Komunikat, Typ
 from ..models import (
@@ -54,6 +65,7 @@ from ..models import (
     Przejazd,
     Status,
     StatusRezerwacji,
+    StatusZmianyUslugi,
     Zakwaterowanie,
     Zolnierz,
 )
@@ -668,3 +680,134 @@ async def odrzucenie_zakwaterowania(
 ):
     sprawdz_csrf(request, request.headers.get("X-CSRF-Token"))
     return await przyjmij_odrzucenie_zakwaterowania(s, broker, id_delegacji, uzytkownik, odrzucenie.przyczyna)
+
+
+# ---------------------------------------------------------------- S22IT1S0P2-34: zmiana usługi w trakcie podróży
+
+
+class ZmianaUslugiIn(BaseModel):
+    """Zgłoszenie dostawcy usługi: <zdarzenie> ::= <rodzaj zdarzenia> <usługa objęta zmianą> <data zdarzenia>."""
+
+    usluga: str = Field(description="transport albo zakwaterowanie")
+    rodzaj: str = Field(description="odwołanie, opóźnienie, zmiana terminu albo brak dostępności")
+    data: date
+    id_polaczenia: str | None = Field(None, max_length=20)
+    id_obiektu: str | None = Field(None, max_length=20)
+    opoznienie_min: int | None = Field(None, gt=0, le=24 * 60)
+    opis: str | None = Field(None, max_length=500)
+
+    @model_validator(mode="after")
+    def sprawdz(self):
+        if self.usluga not in USLUGI:
+            raise ValueError("Usługa: transport albo zakwaterowanie")
+        if self.rodzaj not in RODZAJE_ZDARZEN:
+            raise ValueError("Rodzaj zdarzenia: " + ", ".join(RODZAJE_ZDARZEN))
+        if self.usluga == "transport" and not self.id_polaczenia:
+            raise ValueError("Podaj kurs (id_polaczenia), którego dotyczy zmiana")
+        if self.usluga == "zakwaterowanie" and not self.id_obiektu:
+            raise ValueError("Podaj obiekt noclegowy (id_obiektu), którego dotyczy zmiana")
+        if self.rodzaj == "opóźnienie" and self.usluga == "transport" and not self.opoznienie_min:
+            raise ValueError("Podaj opóźnienie w minutach")
+        return self
+
+
+@router.post("/zmiany-uslug", status_code=202)
+async def zmiana_uslugi(
+    zmiana: ZmianaUslugiIn,
+    s: Session = Depends(get_sesja),
+    broker: Broker = Depends(get_broker),
+):
+    """Dostawca usługi zgłasza zmianę albo odwołanie (integracja symulowana, jak komunikat przewoźnika w -17).
+
+    System identyfikuje delegacje w trakcie realizacji, których rezerwacje obejmuje zmiana, a Agent Monitorujący
+    przygotowuje dla każdej rozwiązanie zastępcze i powiadamia delegowanego.
+    """
+    trafione = identyfikuj_delegacje(s, zmiana.usluga, zmiana.data, zmiana.id_polaczenia, zmiana.id_obiektu)
+    if not trafione:
+        raise HTTPException(404, "Zmiana nie dotyczy żadnej delegacji w trakcie realizacji")
+    for id_delegacji, id_uslugi in trafione:
+        await broker.publikuj(
+            Komunikat(
+                typ=Typ.ZMIANA_USLUGI,
+                id_delegacji=id_delegacji,
+                dane={
+                    "usluga": zmiana.usluga,
+                    "rodzaj": zmiana.rodzaj,
+                    "id_uslugi": id_uslugi,
+                    "data": zmiana.data.isoformat(),
+                    "opoznienie_min": zmiana.opoznienie_min,
+                    "opis": (zmiana.opis or "").strip(),
+                },
+            )
+        )
+    return {"przyjeto": True, "delegacje": [i for i, _ in trafione]}
+
+
+def opis_zmiany(s: Session, z) -> dict:
+    return {
+        "id_zmiany": z.id_zmiany,
+        "usluga": z.usluga,
+        "rodzaj_zdarzenia": z.rodzaj_zdarzenia,
+        "data_zdarzenia": z.data_zdarzenia,
+        "usluga_objeta_zmiana": opis_uslugi(s, z),
+        "rozwiazanie_zastepcze": opis_uslugi(s, z, zastepcza=True)
+        if z.id_przejazdu_zastepczego or z.id_zakwaterowania_zastepczego
+        else None,
+        "koszt": z.koszt_zastepczy,
+        "zgodnosc_z_limitem": None if z.zgodny_z_limitem is None else ("tak" if z.zgodny_z_limitem else "nie"),
+        "termin_odpowiedzi": z.termin_odpowiedzi,
+        "status": z.status,
+        "id_dyzurnego": z.id_dyzurnego,
+    }
+
+
+@router.get("/delegacje/{id_delegacji}/zmiany-w-podrozy")
+def zmiany_w_podrozy(
+    id_delegacji: str,
+    s: Session = Depends(get_sesja),
+    uzytkownik: Zolnierz = Depends(uzytkownik_sesji),
+):
+    d = dostep_do_podrozy(s, id_delegacji, uzytkownik)
+    return [opis_zmiany(s, z) for z in zmiany_uslug(s, d)]
+
+
+class OdpowiedzNaZmianeIn(BaseModel):
+    id_zmiany: int = Field(gt=0)
+    akceptacja: bool
+    uzasadnienie: str = Field("", max_length=500)
+
+
+async def przyjmij_odpowiedz_na_zmiane(
+    s: Session, broker: Broker, id_delegacji: str, u: Zolnierz, odpowiedz: OdpowiedzNaZmianeIn
+) -> dict:
+    d = dostep_do_podrozy(s, id_delegacji, u)
+    if u.id_zolnierza != d.id_zolnierza:
+        raise HTTPException(403, "Na rozwiązanie zastępcze odpowiada delegowany")
+    z = next((x for x in zmiany_uslug(s, d) if x.id_zmiany == odpowiedz.id_zmiany), None)
+    if z is None:
+        raise HTTPException(404, "Nie znaleziono zmiany w podróży tej delegacji")
+    if z.status != StatusZmianyUslugi.OCZEKUJE:
+        raise HTTPException(
+            409, "Rozwiązanie nie czeka już na odpowiedź – sprawę zamknięto albo przejęła osoba dyżurna"
+        )
+    await broker.publikuj(
+        Komunikat(
+            typ=Typ.DECYZJA_ZMIANY_USLUGI,
+            id_delegacji=id_delegacji,
+            dane={**odpowiedz.model_dump(), "uzasadnienie": odpowiedz.uzasadnienie.strip(), "id_osoby": u.id_zolnierza},
+        )
+    )
+    return {"przyjeto": True, "komunikat": "Odpowiedź przekazana do Agenta Monitorującego"}
+
+
+@router.post("/delegacje/{id_delegacji}/odpowiedz-na-zmiane", status_code=202)
+async def odpowiedz_na_zmiane(
+    id_delegacji: str,
+    odpowiedz: OdpowiedzNaZmianeIn,
+    request: Request,
+    s: Session = Depends(get_sesja),
+    broker: Broker = Depends(get_broker),
+    uzytkownik: Zolnierz = Depends(uzytkownik_sesji),
+):
+    sprawdz_csrf(request, request.headers.get("X-CSRF-Token"))
+    return await przyjmij_odpowiedz_na_zmiane(s, broker, id_delegacji, uzytkownik, odpowiedz)

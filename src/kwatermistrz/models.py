@@ -39,6 +39,9 @@ class StatusRezerwacji:
     ODWOLANA = "odwołana"  # zarezerwowany przejazd odwołany przez przewoźnika
     ALTERNATYWA = "alternatywa"  # przejazd zastępczy czekający na wybór delegowanego
     ANULOWANA = "anulowana"  # rezerwacja zastąpiona innym przejazdem albo niewybrana alternatywa
+    # S22IT1S0P2-34: zmiana usługi w trakcie podróży zgłoszona przez dostawcę
+    ZAKLOCONA = "zakłócona"  # zarezerwowana usługa objęta zmianą albo odwołaniem
+    ZASTEPCZA = "zastępcza"  # rozwiązanie zastępcze czekające na akceptację delegowanego
     # S22IT1S0P2-40: wybrany obiekt przekracza limit noclegowy – rezerwacja wstrzymana do wyboru obiektu w limicie
     WSTRZYMANA = "wstrzymana – ponad limit"
     # S22IT1S0P2-41: element nowego planu po zmianie terminu zadania, czekający na potwierdzenie delegowanego
@@ -64,6 +67,15 @@ class StatusZlecenia:
     WYCOFANE = "wycofane"  # rezygnacja albo wyczerpane ponowienia – incydent, sprawa u osoby odpowiedzialnej
 
 
+class StatusZmianyUslugi:
+    """Stan zmiany usługi w trakcie podróży zgłoszonej przez dostawcę (S22IT1S0P2-34)."""
+
+    OCZEKUJE = "oczekuje na odpowiedź"  # rozwiązanie zastępcze czeka na akceptację delegowanego
+    ZAAKCEPTOWANA = "zaakceptowana"  # plan i dokumentacja zaktualizowane, przełożony poinformowany
+    U_DYZURNEGO = "u osoby dyżurnej"  # brak rozwiązania, odrzucenie albo brak odpowiedzi w terminie
+    BEZ_ZMIAN = "bez zmian"  # zmiana nie wymaga rozwiązania zastępczego – tylko informacja
+
+
 class StatusRozliczenia:
     W_PRZYGOTOWANIU = "w przygotowaniu"
     GOTOWE_DO_WERYFIKACJI = "gotowe do weryfikacji"  # S22IT1S0P2-36
@@ -86,6 +98,8 @@ class Jednostka(Base):
     budzet_wykorzystany: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=0, server_default="0")
     # Kwota wydatkowana – należności z zatwierdzonych rozliczeń (S22IT1S0P2-36, podzadanie 66)
     budzet_wydatkowany: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=0, server_default="0")
+    # Osoba dyżurna jednostki – przejmuje zmiany w podróży bez odpowiedzi delegowanego (S22IT1S0P2-34)
+    id_dyzurnego: Mapped[str | None] = mapped_column(String(20))
 
 
 class Zolnierz(Base):
@@ -241,6 +255,30 @@ class ZlecenieAgenta(Base):
     status: Mapped[str] = mapped_column(String(30))
     data_zakonczenia: Mapped[datetime | None] = mapped_column(DateTime)
     incydent: Mapped[str | None] = mapped_column(Text)
+
+
+class ZmianaUslugi(Base):
+    """Zmiana usługi w trakcie podróży zgłoszona przez dostawcę i jej obsługa – historia delegacji (S22IT1S0P2-34)."""
+
+    __tablename__ = "zmiana_uslugi"
+
+    id_zmiany: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    id_delegacji: Mapped[str] = mapped_column(ForeignKey("delegacja.id_delegacji"), index=True)
+    usluga: Mapped[str] = mapped_column(String(20))  # transport / zakwaterowanie
+    rodzaj_zdarzenia: Mapped[str] = mapped_column(String(20))  # odwołanie / opóźnienie / zmiana terminu / ...
+    id_przejazdu: Mapped[int | None] = mapped_column(ForeignKey("przejazd.id_przejazdu"))
+    id_zakwaterowania: Mapped[int | None] = mapped_column(ForeignKey("zakwaterowanie.id_zakwaterowania"))
+    data_zdarzenia: Mapped[date] = mapped_column(Date)
+    opis: Mapped[str | None] = mapped_column(Text)
+    data_zgloszenia: Mapped[datetime] = mapped_column(DateTime)
+    id_przejazdu_zastepczego: Mapped[int | None] = mapped_column(ForeignKey("przejazd.id_przejazdu"))
+    id_zakwaterowania_zastepczego: Mapped[int | None] = mapped_column(ForeignKey("zakwaterowanie.id_zakwaterowania"))
+    koszt_zastepczy: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
+    zgodny_z_limitem: Mapped[bool | None] = mapped_column(Boolean)
+    termin_odpowiedzi: Mapped[datetime | None] = mapped_column(DateTime)
+    status: Mapped[str] = mapped_column(String(30))
+    data_odpowiedzi: Mapped[datetime | None] = mapped_column(DateTime)
+    id_dyzurnego: Mapped[str | None] = mapped_column(String(20))
 
 
 class PolecenieWyjazdu(Base):
