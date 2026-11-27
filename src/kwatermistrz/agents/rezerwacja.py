@@ -6,6 +6,9 @@ Wywołuje go Agent Zakwaterowania po komunikacie `wybor.zakwaterowanie` z ekranu
   dla Koordynatora,
 - obiekt wymagający odstępstwa (scenariusz 3a–4a): status `DO_DECYZJI_PRZELOZONEGO` z uzasadnieniem
   delegowanego, powiadomienie przełożonego i delegowanego.
+- S22IT1S0P2-40: wniosek o odstępstwo także dla obiektu wstrzymanego ponad limitem (2a – tylko gdy nie ma
+  propozycji w limicie); rezerwacja sprawdza budżet jednostki i aktualizuje jego zobowiązania
+  (`limit_noclegu.zarezerwuj`).
 """
 
 from sqlalchemy import select
@@ -15,6 +18,7 @@ from ..audit import Decyzja
 from ..messaging import Komunikat, Typ
 from ..models import ObiektZakwaterowania, StatusRezerwacji, Zakwaterowanie, Zolnierz
 from .base import Kontekst, pobierz_delegacje
+from .limit_noclegu import propozycje_w_limicie, zarezerwuj
 
 TYP_DECYZJI = "Wybór zakwaterowania"
 
@@ -25,7 +29,10 @@ def zapisz_wybor_zakwaterowania(s: Session, k: Komunikat, ktx: Kontekst) -> None
     if z is None or z.id_delegacji != d.id_delegacji:
         ktx.ostrzezenie("Nie znaleziono wskazanej propozycji zakwaterowania – wybór pominięty")
         return
-    if z.status != StatusRezerwacji.PROPOZYCJA:
+    if z.status == StatusRezerwacji.WSTRZYMANA and propozycje_w_limicie(s, d):
+        ktx.ostrzezenie("Są obiekty w limicie – wniosek o odstępstwo przysługuje tylko, gdy ich brak (2a)")
+        return
+    if z.status not in (StatusRezerwacji.PROPOZYCJA, StatusRezerwacji.WSTRZYMANA):
         ktx.ostrzezenie(f"Propozycja ma status „{z.status}” – wybór pominięty")
         return
     juz_wybrane = s.scalar(
@@ -59,16 +66,9 @@ def zapisz_wybor_zakwaterowania(s: Session, k: Komunikat, ktx: Kontekst) -> None
         ktx.decyzja(Decyzja(typ=TYP_DECYZJI, wybrany_wariant=nazwa, uzasadnienie=uzasadnienie, decyzja_finansowa=True))
         return
 
-    if obiekt is not None and obiekt.liczba_wolnych_miejsc < 1:
-        ktx.ostrzezenie(f"Brak wolnych miejsc w obiekcie {nazwa} – rezerwacja niemożliwa")
-        return
-    if obiekt is not None:
-        obiekt.liczba_wolnych_miejsc -= 1
-    z.status = StatusRezerwacji.WYBRANA
-    z.uzasadnienie = uzasadnienie or (
+    uzasadnienie = uzasadnienie or (
         "Obiekt w limicie noclegowym"
         + (f", czas dojazdu na miejsce zadania {z.czas_dojazdu_min} min" if z.czas_dojazdu_min is not None else "")
     )
-    ktx.opis = f"Zarezerwowano {nazwa}, {z.data_od:%d.%m}–{z.data_do:%d.%m}, {z.koszt_calkowity:.2f} zł"
-    ktx.decyzja(Decyzja(typ=TYP_DECYZJI, wybrany_wariant=nazwa, uzasadnienie=z.uzasadnienie))
-    ktx.wyslij(Typ.WYNIK_ZAKWATEROWANIA)
+    if zarezerwuj(s, d, z, ktx, uzasadnienie):  # S22IT1S0P2-40: limit, budżet i zobowiązania jednostki
+        ktx.decyzja(Decyzja(typ=TYP_DECYZJI, wybrany_wariant=nazwa, uzasadnienie=z.uzasadnienie))

@@ -39,6 +39,8 @@ class StatusRezerwacji:
     ODWOLANA = "odwołana"  # zarezerwowany przejazd odwołany przez przewoźnika
     ALTERNATYWA = "alternatywa"  # przejazd zastępczy czekający na wybór delegowanego
     ANULOWANA = "anulowana"  # rezerwacja zastąpiona innym przejazdem albo niewybrana alternatywa
+    # S22IT1S0P2-40: wybrany obiekt przekracza limit noclegowy – rezerwacja wstrzymana do wyboru obiektu w limicie
+    WSTRZYMANA = "wstrzymana – ponad limit"
     # S22IT1S0P2-41: element nowego planu po zmianie terminu zadania, czekający na potwierdzenie delegowanego
     NOWY_PLAN = "nowy plan"
 

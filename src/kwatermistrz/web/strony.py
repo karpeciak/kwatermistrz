@@ -74,6 +74,7 @@ from ..models import (
     Status,
     StatusRezerwacji,
     StatusZmianyTerminu,
+    Zakwaterowanie,
     Zolnierz,
 )
 from ..podroze import (
@@ -914,6 +915,13 @@ def dane_wniosku(s: Session, id_delegacji: str, uzytkownik: Zolnierz) -> dict:
         )
         is not None,
         zmiana_terminu=zmiana_terminu,
+        odstepstwo_noclegu=s.scalar(  # S22IT1S0P2-40: link do decyzji przełożonego o odstępstwie
+            select(Zakwaterowanie.id_zakwaterowania).where(
+                Zakwaterowanie.id_delegacji == id_delegacji,
+                Zakwaterowanie.status == StatusRezerwacji.DO_DECYZJI_PRZELOZONEGO,
+            )
+        )
+        is not None,
         ostatnia_aktywnosc=ostatnia_aktywnosc,
         nieaktualny=(d.status == Status.ZLOZONY or (d.status == Status.ZATWIERDZONY and not wynik_transportu))
         and teraz() - ostatnia_aktywnosc > NIEAKTUALNY_PO,

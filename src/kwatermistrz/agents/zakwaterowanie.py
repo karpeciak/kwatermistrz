@@ -11,6 +11,8 @@ Przebieg:
    - decyzja w logu (`TYP_DECYZJI`).
 2. Delegowany wybiera obiekt (`/app/wnioski/{id}/zakwaterowanie` albo `api/organizacja.py`) → `wybor.zakwaterowanie`
    → `zapisz_wybor` (S22IT1S0P2-99, `agents/rezerwacja.py`).
+3. S22IT1S0P2-40: wybór obiektu z katalogu z kontrolą limitu i decyzja przełożonego o odstępstwie
+   (`agents/limit_noclegu.py`).
 """
 
 from datetime import datetime, time, timedelta
@@ -58,6 +60,9 @@ class AgentZakwaterowania(Agent):
         return {
             Typ.ZADANIE_ZAKWATEROWANIA: (self.przygotuj_propozycje, "Dobór obiektów zakwaterowania"),
             Typ.WYBOR_ZAKWATEROWANIA: (self.zapisz_wybor, "Zapis wybranego zakwaterowania"),
+            # S22IT1S0P2-40
+            Typ.WYBOR_OBIEKTU: (self.wybierz_obiekt, "Wybór obiektu z kontrolą limitu noclegowego"),
+            Typ.DECYZJA_ODSTEPSTWA: (self.decyduj_o_odstepstwie, "Decyzja o odstępstwie od limitu noclegowego"),
         }
 
     def przygotuj_propozycje(self, s: Session, k: Komunikat, ktx: Kontekst) -> None:
@@ -148,3 +153,13 @@ class AgentZakwaterowania(Agent):
         from .rezerwacja import zapisz_wybor_zakwaterowania
 
         zapisz_wybor_zakwaterowania(s, k, ktx)
+
+    def wybierz_obiekt(self, s: Session, k: Komunikat, ktx: Kontekst) -> None:
+        from .limit_noclegu import wybierz_obiekt  # S22IT1S0P2-40 (import lokalny – moduł korzysta z reguł tego)
+
+        wybierz_obiekt(s, k, ktx)
+
+    def decyduj_o_odstepstwie(self, s: Session, k: Komunikat, ktx: Kontekst) -> None:
+        from .limit_noclegu import decyduj_o_odstepstwie
+
+        decyduj_o_odstepstwie(s, k, ktx)

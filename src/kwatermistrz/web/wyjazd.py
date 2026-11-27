@@ -17,14 +17,24 @@ from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..agents.limit_noclegu import (
+    katalog_obiektow,
+    propozycje_w_limicie,
+    przelozony,
+    wniosek_o_odstepstwo,
+    wstrzymana_rezerwacja,
+)
 from ..agents.zmiana_przejazdu import dostepny_budzet, odwolane_przejazdy, przejazdy_alternatywne
 from ..api.organizacja import (
+    DecyzjaOdstepstwaIn,
     DecyzjaPlanuIn,
     WyborAlternatywyIn,
     porownanie_planow,
+    przyjmij_decyzje_odstepstwa,
     przyjmij_decyzje_planu,
     przyjmij_wybor,
     przyjmij_wybor_alternatywy,
+    przyjmij_wybor_obiektu,
 )
 from ..api.zaleznosci import chron_formularze, get_broker, get_sesja, sprawdz_csrf
 from ..messaging import Broker, Komunikat, Typ
@@ -39,6 +49,7 @@ from ..models import (
     Zolnierz,
 )
 from ..podroze import WyborPodrozy, zestawienie
+from ..stawki import LIMIT_NOCLEGOWY
 from .strony import biezacy_uzytkownik, strona
 
 router = APIRouter(prefix="/app", include_in_schema=False, dependencies=[Depends(chron_formularze)])
@@ -52,6 +63,8 @@ WYNIK_ZMIANA = "zmiana-przejazdu"
 WYNIK_ODRZUCENIE_ALTERNATYW = "alternatywy-odrzucone"
 WYNIK_PLAN_POTWIERDZONY = "plan-potwierdzony"
 WYNIK_BRAK_UDZIALU = "brak-udzialu"
+WYNIK_OBIEKT = "obiekt-wybrany"
+WYNIK_ODSTEPSTWO = "odstepstwo-rozpatrzone"
 KOMUNIKATY = {
     WYNIK_WYBOR: "Wybór przekazany – system zapisze go i uzupełni dokumentację delegacji.",
     WYNIK_ODRZUCENIE: "Odrzucono zaproponowane warianty – przejazd zostanie uzgodniony indywidualnie.",
@@ -63,6 +76,8 @@ KOMUNIKATY = {
     "i zaktualizuje polecenie wyjazdu.",
     WYNIK_BRAK_UDZIALU: "Zgłoszono brak możliwości udziału – realizacja delegacji zostanie wstrzymana, "
     "a sprawę przejmie przełożony.",
+    WYNIK_OBIEKT: "Wybór przekazany – system sprawdzi limit noclegowy i budżet jednostki.",
+    WYNIK_ODSTEPSTWO: "Decyzja przekazana – system zarezerwuje obiekt albo poinformuje delegowanego o odmowie.",
 }
 
 
@@ -417,14 +432,24 @@ def dane_zakwaterowania(s: Session, d: Delegacja) -> dict:
     propozycje = [z for z in noclegi if z.status == StatusRezerwacji.PROPOZYCJA]
     wybrane = next((z for z in noclegi if z.status == StatusRezerwacji.WYBRANA), None)
     oczekuje = next((z for z in noclegi if z.status == StatusRezerwacji.DO_DECYZJI_PRZELOZONEGO), None)
+    # S22IT1S0P2-40: rezerwacja wstrzymana ponad limitem i katalog obiektów do samodzielnego wyboru
+    wstrzymana = wstrzymana_rezerwacja(s, d)
+    if wstrzymana is not None:
+        obiekty[wstrzymana.id_obiektu] = s.get(ObiektZakwaterowania, wstrzymana.id_obiektu)
+    w_limicie = propozycje_w_limicie(s, d)
+    wolne = d.status == Status.ZATWIERDZONY and not wybrane and not oczekuje
     return dict(
         d=d,
-        w_limicie=[z for z in propozycje if not z.wymaga_odstepstwa],
+        w_limicie=w_limicie,
         z_odstepstwem=[z for z in propozycje if z.wymaga_odstepstwa],
         obiekty=obiekty,
         wybrane=wybrane,
         oczekuje=oczekuje,
-        mozna_wybrac=d.status == Status.ZATWIERDZONY and bool(propozycje) and not wybrane and not oczekuje,
+        mozna_wybrac=wolne and bool(propozycje),
+        wstrzymana=wstrzymana if wolne else None,
+        odstepstwo_dla_wstrzymanej=wolne and wstrzymana is not None and not w_limicie,
+        katalog=katalog_obiektow(s, d) if wolne else [],
+        limit=LIMIT_NOCLEGOWY,
     )
 
 
@@ -456,10 +481,13 @@ async def wybierz_zakwaterowanie(
     d = delegacja_do_organizacji(s, id_delegacji, uzytkownik)
     kontekst = dane_zakwaterowania(s, d)
     numer = _na_liczbe(id_zakwaterowania)
-    wybor = next((z for z in kontekst["w_limicie"] + kontekst["z_odstepstwem"] if z.id_zakwaterowania == numer), None)
+    dostepne = kontekst["w_limicie"] + kontekst["z_odstepstwem"]
+    if kontekst["odstepstwo_dla_wstrzymanej"]:  # S22IT1S0P2-40 (2a): wniosek o odstępstwo dla wstrzymanego obiektu
+        dostepne.append(kontekst["wstrzymana"])
+    wybor = next((z for z in dostepne if z.id_zakwaterowania == numer), None)
     uzasadnienie = uzasadnienie.strip()
     komunikat = None
-    if not kontekst["mozna_wybrac"]:
+    if not kontekst["mozna_wybrac"] and not kontekst["odstepstwo_dla_wstrzymanej"]:
         komunikat = "Zakwaterowanie zostało już wybrane albo nie ma propozycji do wyboru."
     elif wybor is None:
         komunikat = "Wybierz obiekt zakwaterowania."
@@ -481,3 +509,88 @@ async def wybierz_zakwaterowanie(
     dane = {"id_zakwaterowania": wybor.id_zakwaterowania, "uzasadnienie": uzasadnienie or None}
     await broker.publikuj(Komunikat(typ=Typ.WYBOR_ZAKWATEROWANIA, id_delegacji=d.id_delegacji, dane=dane))
     return RedirectResponse(f"/app/wnioski/{id_delegacji}/zakwaterowanie?wynik={WYNIK_WYBOR}", status_code=303)
+
+
+# ---------------------------------------------------------------- limit noclegowy i odstępstwo (S22IT1S0P2-40)
+
+
+@router.post("/wnioski/{id_delegacji}/zakwaterowanie/katalog", response_class=HTMLResponse)
+async def wybierz_obiekt_z_katalogu(
+    id_delegacji: str,
+    request: Request,
+    id_obiektu: str = Form(""),
+    s: Session = Depends(get_sesja),
+    broker: Broker = Depends(get_broker),
+    uzytkownik: Zolnierz = Depends(biezacy_uzytkownik),
+):
+    """Podzadanie 153: delegowany wybiera inny obiekt; ponad limitem system wstrzyma rezerwację."""
+    d = delegacja_do_organizacji(s, id_delegacji, uzytkownik)
+    formularz = await request.form()
+    sprawdz_csrf(request, request.headers.get("X-CSRF-Token") or formularz.get("csrf"))
+    try:
+        await przyjmij_wybor_obiektu(s, broker, d.id_delegacji, uzytkownik, id_obiektu.strip())
+    except HTTPException as e:
+        if e.status_code != 409:
+            raise
+        return strona(
+            request, s, "zakwaterowanie.html", uzytkownik, **dane_zakwaterowania(s, d), komunikat=e.detail, blad=True
+        )
+    return RedirectResponse(f"/app/wnioski/{id_delegacji}/zakwaterowanie?wynik={WYNIK_OBIEKT}", status_code=303)
+
+
+def wniosek_dla_przelozonego(s: Session, id_delegacji: str, uzytkownik: Zolnierz) -> tuple[Delegacja, dict]:
+    d = s.get(Delegacja, id_delegacji)
+    if d is None or uzytkownik.id_zolnierza != przelozony(s, d):
+        raise HTTPException(404, "Nie znaleziono delegacji")
+    z = wniosek_o_odstepstwo(s, d)
+    obiekt = s.get(ObiektZakwaterowania, z.id_obiektu) if z else None
+    noce = max(1, (z.data_do - z.data_od).days) if z else 0
+    return d, dict(
+        d=d,
+        z=z,
+        obiekt=obiekt,
+        limit=LIMIT_NOCLEGOWY,
+        nadwyzka=(z.koszt_calkowity - LIMIT_NOCLEGOWY * noce) if z else None,
+        budzet=dostepny_budzet(s, d),
+    )
+
+
+@router.get("/wnioski/{id_delegacji}/odstepstwo", response_class=HTMLResponse)
+def odstepstwo(
+    id_delegacji: str,
+    request: Request,
+    wynik: str | None = None,
+    s: Session = Depends(get_sesja),
+    uzytkownik: Zolnierz = Depends(biezacy_uzytkownik),
+):
+    """Podzadanie 155: przełożony rozpatruje wniosek o odstępstwo od limitu noclegowego."""
+    _d, kontekst = wniosek_dla_przelozonego(s, id_delegacji, uzytkownik)
+    return strona(request, s, "odstepstwo.html", uzytkownik, **kontekst, komunikat=KOMUNIKATY.get(wynik))
+
+
+@router.post("/wnioski/{id_delegacji}/odstepstwo", response_class=HTMLResponse)
+async def decyzja_o_odstepstwie(
+    id_delegacji: str,
+    request: Request,
+    zgoda: str = Form(""),
+    uzasadnienie: str = Form(""),
+    s: Session = Depends(get_sesja),
+    broker: Broker = Depends(get_broker),
+    uzytkownik: Zolnierz = Depends(biezacy_uzytkownik),
+):
+    d, kontekst = wniosek_dla_przelozonego(s, id_delegacji, uzytkownik)
+    formularz = await request.form()
+    sprawdz_csrf(request, request.headers.get("X-CSRF-Token") or formularz.get("csrf"))
+    try:
+        decyzja = DecyzjaOdstepstwaIn(zgoda=zgoda == "tak", uzasadnienie=uzasadnienie)
+        await przyjmij_decyzje_odstepstwa(s, broker, d.id_delegacji, uzytkownik, decyzja)
+    except (ValidationError, HTTPException) as e:
+        if isinstance(e, HTTPException) and e.status_code != 409:
+            raise
+        komunikat = (
+            str(e.detail) if isinstance(e, HTTPException) else e.errors()[0]["msg"].removeprefix("Value error, ")
+        )
+        return strona(
+            request, s, "odstepstwo.html", uzytkownik, **kontekst, komunikat=komunikat, blad=True, uwagi=uzasadnienie
+        )
+    return RedirectResponse(f"/app/wnioski/{id_delegacji}/odstepstwo?wynik={WYNIK_ODSTEPSTWO}", status_code=303)

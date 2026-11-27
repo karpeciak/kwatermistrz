@@ -49,6 +49,30 @@
 </div>
 {% endmacro %}
 
+{# S22IT1S0P2-40 (154): wstrzymana rezerwacja ponad limitem – obiekty w limicie albo wniosek o odstępstwo (2a) #}
+{% if wstrzymana %}
+{% set ow = obiekty.get(wstrzymana.id_obiektu) %}
+<article class="komunikat ostrzezenie" role="alert">
+  <p><strong>Przekroczony limit noclegowy – rezerwację wstrzymano.</strong>
+    {{ ow.nazwa if ow else wstrzymana.id_obiektu }}: {{ wstrzymana.cena_za_dobe | kwota }} za dobę,
+    limit {{ limit | kwota }} (koszt pobytu {{ wstrzymana.koszt_calkowity | kwota }}).</p>
+  {% if w_limicie %}
+  <p>Wybierz obiekt mieszczący się w limicie – w pierwszej kolejności obiekty wojskowe.</p>
+  {% else %}
+  <p>W miejscowości zadania nie ma obiektów mieszczących się w limicie. Możesz złożyć wniosek o odstępstwo –
+    po zgodzie przełożonego system zarezerwuje ten obiekt.</p>
+  <form method="post" action="/app/wnioski/{{ d.id_delegacji }}/zakwaterowanie">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <input type="hidden" name="id_zakwaterowania" value="{{ wstrzymana.id_zakwaterowania }}">
+    <label for="uzasadnienie_odstepstwa">Uzasadnienie wniosku o odstępstwo *
+      <textarea id="uzasadnienie_odstepstwa" name="uzasadnienie" rows="2" maxlength="500" required>{{ uzasadnienie or '' }}</textarea>
+    </label>
+    <button type="submit">Złóż wniosek o odstępstwo</button>
+  </form>
+  {% endif %}
+</article>
+{% endif %}
+
 {% if not d.potrzeba_zakwaterowania %}
 <article><p>We wniosku nie zgłoszono potrzeby zakwaterowania.</p></article>
 {% elif wybrane %}
@@ -99,5 +123,33 @@
   </label>
   <button type="submit">Zarezerwuj</button>
 </form>
+{% endif %}
+
+{# S22IT1S0P2-40 (153): samodzielny wybór obiektu z katalogu – system sprawdzi limit i budżet #}
+{% if katalog %}
+<details>
+  <summary>Inny obiekt z katalogu</summary>
+  <form method="post" action="/app/wnioski/{{ d.id_delegacji }}/zakwaterowanie/katalog">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <div class="overflow-auto">
+      <table>
+        <thead><tr><th scope="col">Obiekt</th><th scope="col">Dojazd na zadanie</th><th scope="col">Wolne miejsca</th><th scope="col">Cena za dobę</th></tr></thead>
+        <tbody>
+          {% for o in katalog %}
+          <tr>
+            <td><label><input type="radio" name="id_obiektu" value="{{ o.id_obiektu }}" required> <strong>{{ o.nazwa }}</strong></label>
+              <br><small>{{ o.rodzaj }} · {{ o.miejscowosc }}</small></td>
+            <td class="bez-lamania">{% if o.czas_dojazdu_min is not none %}{{ o.czas_dojazdu_min }} min{% else %}–{% endif %}</td>
+            <td>{{ o.liczba_wolnych_miejsc }}</td>
+            <td class="bez-lamania">{{ o.cena_za_dobe | kwota }}{% if o.cena_za_dobe > limit %}<br><span class="ponad-limit">ponad limit</span>{% endif %}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <small>Limit noclegowy: {{ limit | kwota }} za dobę. Wybór obiektu ponad limitem wstrzyma rezerwację.</small>
+    <button type="submit" class="secondary">Wybierz ten obiekt</button>
+  </form>
+</details>
 {% endif %}
 {% endblock %}

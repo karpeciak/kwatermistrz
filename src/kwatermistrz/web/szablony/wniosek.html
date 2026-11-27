@@ -27,4 +27,9 @@
   </div>
 </article>
 {% endif %}
+{# S22IT1S0P2-40: wniosek o odstępstwo od limitu noclegowego czeka na decyzję przełożonego #}
+{% if odstepstwo_noclegu and uzytkownik.id_zolnierza != d.id_zolnierza %}
+<p class="komunikat ostrzezenie" role="status">Delegowany prosi o odstępstwo od limitu noclegowego.
+  <a href="/app/wnioski/{{ d.id_delegacji }}/odstepstwo">Rozpatrz wniosek</a></p>
+{% endif %}
 {% endblock %}
