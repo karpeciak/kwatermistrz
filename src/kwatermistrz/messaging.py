@@ -35,6 +35,9 @@ class Typ:
     ZADANIE_ZAKWATEROWANIA = "zadanie.zakwaterowanie"
     WYBOR_ZAKWATEROWANIA = "wybor.zakwaterowanie"
     WYNIK_ZAKWATEROWANIA = "wynik.zakwaterowanie"
+    # Zakwaterowanie w limicie i odstępstwo od limitu (S22IT1S0P2-40)
+    WYBOR_OBIEKTU = "wybor.obiekt_zakwaterowania"
+    DECYZJA_ODSTEPSTWA = "decyzja.odstepstwo_noclegu"
     # Realizacja (sprint 3)
     ZADANIE_MONITOROWANIA = "zadanie.monitorowanie"
     # Zmiana przejazdu po odwołaniu przez przewoźnika (S22IT1S0P2-17)
