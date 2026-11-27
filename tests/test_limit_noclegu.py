@@ -236,7 +236,8 @@ def test_o_odstepstwie_decyduje_tylko_przelozony(broker):
     assert len(noclegi(StatusRezerwacji.DO_DECYZJI_PRZELOZONEGO)) == 1
 
 
-def test_odstepstwo_ponad_budzet_jednostki_nie_rezerwuje(broker):
+def test_zgoda_bez_mozliwosci_rezerwacji_zamyka_wniosek_i_powiadamia(broker):
+    """Z przeglądu PR #34: zgoda przy braku budżetu nie może zostawić wniosku „do decyzji” bez informacji."""
     bez_miejsc_w_limicie()
     przygotuj_propozycje(broker)
     (bulwar,) = [z for z in noclegi(StatusRezerwacji.PROPOZYCJA) if z.id_obiektu == "OBJ-04"]
@@ -247,8 +248,18 @@ def test_odstepstwo_ponad_budzet_jednostki_nie_rezerwuje(broker):
 
     dostarcz(broker, Typ.DECYZJA_ODSTEPSTWA, zgoda=True, uzasadnienie="", id_osoby=PRZELOZONY)
 
-    assert noclegi(StatusRezerwacji.WYBRANA) == []
-    assert len(noclegi(StatusRezerwacji.DO_DECYZJI_PRZELOZONEGO)) == 1
+    assert noclegi(StatusRezerwacji.WYBRANA) == [] and noclegi(StatusRezerwacji.DO_DECYZJI_PRZELOZONEGO) == []
+    (zamkniety,) = [z for z in noclegi(StatusRezerwacji.ANULOWANA) if z.id_obiektu == "OBJ-04"]
+    assert "rezerwacja niemożliwa" in zamkniety.uzasadnienie and "budżet" in zamkniety.uzasadnienie
+    assert any("Wybierz inny obiekt" in t for t in broker.powiadomienia(DELEGOWANY))
+    assert any("Zdecyduj, jak zorganizować nocleg" in t for t in broker.powiadomienia(PRZELOZONY))
+    assert zobowiazania()[1] == SZACUNEK  # szacowany koszt bez zmian
+
+    with sesja() as s:  # delegowany nie jest zablokowany – może wybrać inny obiekt
+        s.get(ObiektZakwaterowania, "OBJ-02").liczba_wolnych_miejsc = 5
+    dostarcz(broker, Typ.WYBOR_OBIEKTU, id_obiektu="OBJ-02", id_osoby=DELEGOWANY)
+    (wybrany,) = noclegi(StatusRezerwacji.WYBRANA)
+    assert wybrany.id_obiektu == "OBJ-02"
 
 
 # ---------------------------------------------------------------- podzadanie 154: ekrany i API

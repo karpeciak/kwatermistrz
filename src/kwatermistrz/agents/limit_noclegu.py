@@ -251,6 +251,31 @@ def decyduj_o_odstepstwie(s: Session, k: Komunikat, ktx: Kontekst) -> None:
 
     uzasadnienie = f"Odstępstwo od limitu zatwierdzone przez {k.dane['id_osoby']}" + (f": {uwagi}" if uwagi else "")
     if not zarezerwuj(s, d, z, ktx, f"{z.uzasadnienie or ''}\n{uzasadnienie}".strip()):
+        # Zgoda, ale rezerwacja niemożliwa (budżet albo brak miejsc) – wniosek zamknięty, żeby sprawa nie utknęła:
+        # delegowany może wybrać inny obiekt, a przełożony wie, dlaczego zgoda nie dała rezerwacji
+        przyczyna = ktx.opis
+        z.status = StatusRezerwacji.ANULOWANA
+        z.uzasadnienie = f"{z.uzasadnienie or ''}\n{uzasadnienie}; rezerwacja niemożliwa: {przyczyna}".strip()
+        ktx.decyzja(
+            Decyzja(
+                typ=TYP_ODSTEPSTWA,
+                wybrany_wariant=f"Zgoda bez rezerwacji: {nazwa}",
+                uzasadnienie=f"{uzasadnienie}; {przyczyna}",
+                decyzja_finansowa=True,
+            )
+        )
+        for odbiorca, dalej in (
+            (d.id_zolnierza, "Wybierz inny obiekt zakwaterowania."),
+            (k.dane["id_osoby"], "Zdecyduj, jak zorganizować nocleg delegowanego."),
+        ):
+            ktx.wyslij(
+                Typ.POWIADOMIENIE,
+                {
+                    "do": odbiorca,
+                    "tresc": f"Delegacja {d.id_delegacji}: mimo zgody na odstępstwo nie zarezerwowano {nazwa} "
+                    f"({przyczyna}). {dalej}",
+                },
+            )
         return
     ktx.decyzja(
         Decyzja(
