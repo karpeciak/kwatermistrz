@@ -19,6 +19,14 @@
   {%- if pol %}<br><small>{{ pol.przewoznik }} · {{ pol.skad }} → {{ pol.dokad }}</small>{% endif %}
 {%- endmacro %}
 
+{# S22IT1S0P2-17: odwołany przejazd czeka na wybór zamiennika #}
+{% if odwolane %}
+<p class="komunikat ostrzezenie" role="status">
+  Przewoźnik odwołał przejazd {% for p in odwolane %}{{ p.kierunek | lower }} ({{ p.data_przejazdu.strftime('%d.%m.%Y') }}){% if not loop.last %}, {% endif %}{% endfor %}.
+  <a href="/app/wnioski/{{ d.id_delegacji }}/przejazd-alternatywny">Wybierz przejazd alternatywny</a>
+</p>
+{% endif %}
+
 {% if wybrane %}
 <article>
   <header><strong>Wybrany przejazd</strong></header>

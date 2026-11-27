@@ -852,7 +852,10 @@ def dane_wniosku(s: Session, id_delegacji: str, uzytkownik: Zolnierz) -> dict:
         oczekiwanie = "Wniosek oczekuje na decyzję przełożonego."
     elif d.status == Status.ZATWIERDZONY:
         warianty = list(s.scalars(select(Przejazd).where(Przejazd.id_delegacji == id_delegacji)))
-        if decyzja_do_uzgodnienia(s, d) or any(r.status == StatusRezerwacji.DO_UZGODNIENIA for r in warianty):
+        if any(r.status == StatusRezerwacji.ALTERNATYWA for r in warianty):  # S22IT1S0P2-17
+            oczekiwanie = "Przewoźnik odwołał przejazd. Oczekiwanie na wybór przejazdu alternatywnego."
+            odswiezaj = False
+        elif decyzja_do_uzgodnienia(s, d) or any(r.status == StatusRezerwacji.DO_UZGODNIENIA for r in warianty):
             oczekiwanie = "Podróż została przekazana do dodatkowego uzgodnienia."
             odswiezaj = False
         elif {"Tam", "Powrót"} <= {r.kierunek for r in warianty if r.status == StatusRezerwacji.WYBRANA}:
@@ -890,6 +893,12 @@ def dane_wniosku(s: Session, id_delegacji: str, uzytkownik: Zolnierz) -> dict:
         status_boczny=d.status in ETAP_STATUSU_BOCZNEGO,
         przypomnienie=przypomnienie,
         przekazanie=przekazanie,
+        odwolany_przejazd=s.scalar(  # S22IT1S0P2-17: link do wyboru przejazdu alternatywnego
+            select(Przejazd.id_przejazdu).where(
+                Przejazd.id_delegacji == id_delegacji, Przejazd.status == StatusRezerwacji.ODWOLANA
+            )
+        )
+        is not None,
         ostatnia_aktywnosc=ostatnia_aktywnosc,
         nieaktualny=(d.status == Status.ZLOZONY or (d.status == Status.ZATWIERDZONY and not wynik_transportu))
         and teraz() - ostatnia_aktywnosc > NIEAKTUALNY_PO,

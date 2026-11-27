@@ -9,15 +9,30 @@ Zrobione:
 - S22IT1S0P2-27: `GET /delegacje/{id}/warianty-podrozy` – propozycje z rekomendacją (`Przejazd`, status propozycja),
   `POST /delegacje/{id}/wybor-podrozy` – wybór wariantu z przyczyną albo odrzucenie wszystkich
   → komunikat `Typ.WYBOR_TRANSPORTU`.
+- S22IT1S0P2-17: `POST /delegacje/{id}/przejazdy/{id_przejazdu}/odwolanie` – komunikat przewoźnika o odwołaniu
+  zarezerwowanego przejazdu → `Typ.ODWOLANIE_PRZEJAZDU`; `GET /delegacje/{id}/przejazdy-alternatywne` – propozycje
+  zastępcze; `POST /delegacje/{id}/wybor-przejazdu-alternatywnego` – wybór albo odrzucenie wszystkich
+  → `Typ.WYBOR_PRZEJAZDU_ALTERNATYWNEGO`.
 """
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..agents.zmiana_przejazdu import ETAPY_PRZED_PODROZA, przejazdy_alternatywne
+from ..db import teraz
 from ..messaging import Broker, Komunikat, Typ
-from ..models import ObiektZakwaterowania, PolecenieWyjazdu, Status, StatusRezerwacji, Zakwaterowanie, Zolnierz
+from ..models import (
+    ObiektZakwaterowania,
+    Polaczenie,
+    PolecenieWyjazdu,
+    Przejazd,
+    Status,
+    StatusRezerwacji,
+    Zakwaterowanie,
+    Zolnierz,
+)
 from ..podroze import (
     BladPodrozy,
     Kryterium,
@@ -103,6 +118,126 @@ async def wybor_podrozy(
     """Sesja z /app/logowanie; X-CSRF-Token z formularza strony podróży."""
     sprawdz_csrf(request, request.headers.get("X-CSRF-Token"))
     return await przyjmij_wybor(s, broker, id_delegacji, uzytkownik, wybor)
+
+
+# ---------------------------------------------------------------- S22IT1S0P2-17: odwołanie przejazdu
+
+
+class OdwolanieIn(BaseModel):
+    """Komunikat przewoźnika o odwołaniu zarezerwowanego kursu."""
+
+    przyczyna: str = Field(min_length=3, max_length=500)
+    przewoznik: str | None = Field(None, max_length=100)
+
+
+class WyborAlternatywyIn(BaseModel):
+    id_przejazdu: int | None = Field(None, gt=0)
+    odrzuc_wszystkie: bool = False
+    uzasadnienie: str = Field("", max_length=500)
+
+    @model_validator(mode="after")
+    def sprawdz(self):
+        if self.odrzuc_wszystkie:
+            if self.id_przejazdu is not None:
+                raise ValueError("Odrzucenie wszystkich nie może zawierać wybranego przejazdu")
+            if not self.uzasadnienie.strip():
+                raise ValueError("Podaj przyczynę odrzucenia wszystkich przejazdów alternatywnych")
+        elif self.id_przejazdu is None:
+            raise ValueError("Wybierz przejazd alternatywny")
+        return self
+
+
+@router.post("/delegacje/{id_delegacji}/przejazdy/{id_przejazdu}/odwolanie", status_code=202)
+async def odwolanie_przejazdu(
+    id_delegacji: str,
+    id_przejazdu: int,
+    odwolanie: OdwolanieIn,
+    s: Session = Depends(get_sesja),
+    broker: Broker = Depends(get_broker),
+):
+    """Przewoźnik odwołuje zarezerwowany przejazd przed rozpoczęciem podróży (integracja symulowana).
+
+    Agent Monitorujący zapisze odwołanie, przygotuje przejazdy alternatywne i powiadomi delegowanego.
+    """
+    d = pobierz_delegacje(s, id_delegacji)
+    r = s.get(Przejazd, id_przejazdu)
+    if r is None or r.id_delegacji != id_delegacji:
+        raise HTTPException(404, "Nie znaleziono przejazdu tej delegacji")
+    if r.status != StatusRezerwacji.WYBRANA:
+        raise HTTPException(409, "Odwołać można tylko zarezerwowany przejazd")
+    if d.status not in ETAPY_PRZED_PODROZA or r.data_przejazdu < teraz().date():
+        raise HTTPException(409, "Podróż już się rozpoczęła – zmianę obsługuje się w trakcie wyjazdu")
+    przyczyna = odwolanie.przyczyna.strip()
+    if odwolanie.przewoznik:
+        przyczyna = f"{odwolanie.przewoznik.strip()}: {przyczyna}"
+    await broker.publikuj(
+        Komunikat(
+            typ=Typ.ODWOLANIE_PRZEJAZDU,
+            id_delegacji=id_delegacji,
+            dane={"id_przejazdu": id_przejazdu, "przyczyna": przyczyna},
+        )
+    )
+    return {"przyjeto": True, "komunikat": "Odwołanie przekazane do Agenta Monitorującego"}
+
+
+def opis_alternatywy(s: Session, r: Przejazd) -> dict:
+    p = s.get(Polaczenie, r.id_polaczenia) if r.id_polaczenia else None
+    return {
+        "id_przejazdu": r.id_przejazdu,
+        "kierunek": r.kierunek,
+        "data_przejazdu": r.data_przejazdu,
+        "srodek_transportu": r.srodek_transportu,
+        "przewoznik": p.przewoznik if p else None,
+        "godzina_odjazdu": p.godzina_odjazdu if p else None,
+        "godzina_przyjazdu": p.godzina_przyjazdu if p else None,
+        "koszt": r.koszt,
+        "rekomendowany": r.rekomendowany,
+        "uzasadnienie": r.uzasadnienie,
+    }
+
+
+@router.get("/delegacje/{id_delegacji}/przejazdy-alternatywne")
+def alternatywy_przejazdu(
+    id_delegacji: str,
+    s: Session = Depends(get_sesja),
+    uzytkownik: Zolnierz = Depends(uzytkownik_sesji),
+):
+    d = dostep_do_podrozy(s, id_delegacji, uzytkownik)
+    return [opis_alternatywy(s, r) for r in przejazdy_alternatywne(s, d)]
+
+
+async def przyjmij_wybor_alternatywy(
+    s: Session, broker: Broker, id_delegacji: str, u: Zolnierz, wybor: WyborAlternatywyIn
+) -> dict:
+    d = dostep_do_podrozy(s, id_delegacji, u)
+    if u.id_zolnierza != d.id_zolnierza:
+        raise HTTPException(403, "Przejazd alternatywny wybiera delegowany")
+    propozycje = przejazdy_alternatywne(s, d)
+    if not propozycje:
+        raise HTTPException(409, "Brak przejazdów alternatywnych oczekujących na wybór")
+    if not wybor.odrzuc_wszystkie and all(p.id_przejazdu != wybor.id_przejazdu for p in propozycje):
+        raise HTTPException(409, "Wybierz jeden z przedstawionych przejazdów alternatywnych")
+    await broker.publikuj(
+        Komunikat(
+            typ=Typ.WYBOR_PRZEJAZDU_ALTERNATYWNEGO,
+            id_delegacji=id_delegacji,
+            dane={**wybor.model_dump(), "uzasadnienie": wybor.uzasadnienie.strip(), "id_osoby": u.id_zolnierza},
+        )
+    )
+    return {"przyjeto": True, "komunikat": "Wybór przekazany do Agenta Monitorującego"}
+
+
+@router.post("/delegacje/{id_delegacji}/wybor-przejazdu-alternatywnego", status_code=202)
+async def wybor_przejazdu_alternatywnego(
+    id_delegacji: str,
+    wybor: WyborAlternatywyIn,
+    request: Request,
+    s: Session = Depends(get_sesja),
+    broker: Broker = Depends(get_broker),
+    uzytkownik: Zolnierz = Depends(uzytkownik_sesji),
+):
+    sprawdz_csrf(request, request.headers.get("X-CSRF-Token"))
+    return await przyjmij_wybor_alternatywy(s, broker, id_delegacji, uzytkownik, wybor)
 
 
 # ---------------------------------------------------------------- S22IT1S0P2-38: polecenie wyjazdu

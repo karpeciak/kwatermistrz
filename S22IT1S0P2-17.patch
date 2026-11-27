@@ -1,0 +1,1269 @@
+diff --git a/src/kwatermistrz/agents/monitorujacy.py b/src/kwatermistrz/agents/monitorujacy.py
+index 1c55d78..75b722e 100644
+--- a/src/kwatermistrz/agents/monitorujacy.py
++++ b/src/kwatermistrz/agents/monitorujacy.py
+@@ -1,9 +1,15 @@
+-"""Agent Monitorujący – zmiany w trakcie wyjazdu i replanowanie (sprint 3: S22IT1S0P2-17, -18, -29, -41)."""
++"""Agent Monitorujący – zmiany w trakcie wyjazdu i replanowanie (sprint 3: S22IT1S0P2-17, -18, -29, -41).
++
++Zrobione:
++- S22IT1S0P2-17: odwołanie przejazdu przez przewoźnika i wybór przejazdu alternatywnego
++  (`agents/zmiana_przejazdu.py`).
++"""
+ 
+ from sqlalchemy.orm import Session
+ 
+ from ..messaging import Komunikat, Typ
+ from .base import Agent, Kontekst, do_zrobienia
++from .zmiana_przejazdu import zapisz_wybor_alternatywy, zarejestruj_odwolanie
+ 
+ 
+ class AgentMonitorujacy(Agent):
+@@ -13,7 +19,12 @@ class AgentMonitorujacy(Agent):
+     wersja_modelu = "w-budowie"
+ 
+     def obslugi(self):
+-        return {Typ.ZADANIE_MONITOROWANIA: (self.monitoruj, "Monitorowanie przebiegu wyjazdu")}
++        return {
++            Typ.ZADANIE_MONITOROWANIA: (self.monitoruj, "Monitorowanie przebiegu wyjazdu"),
++            # S22IT1S0P2-17
++            Typ.ODWOLANIE_PRZEJAZDU: (zarejestruj_odwolanie, "Odwołanie przejazdu przez przewoźnika"),
++            Typ.WYBOR_PRZEJAZDU_ALTERNATYWNEGO: (zapisz_wybor_alternatywy, "Zmiana przejazdu po odwołaniu"),
++        }
+ 
+     def monitoruj(self, s: Session, k: Komunikat, ktx: Kontekst) -> None:
+         do_zrobienia(ktx, "sprintu 3")
+diff --git a/src/kwatermistrz/agents/zmiana_przejazdu.py b/src/kwatermistrz/agents/zmiana_przejazdu.py
+new file mode 100644
+index 0000000..719bcb9
+--- /dev/null
++++ b/src/kwatermistrz/agents/zmiana_przejazdu.py
+@@ -0,0 +1,371 @@
++"""Zmiana przejazdu po jego odwołaniu przez przewoźnika – S22IT1S0P2-17 (podzadania 134, 135, 137).
++
++Obsługę wywołuje Agent Monitorujący (AG-08):
++1. `zdarzenie.odwolanie_przejazdu` (komunikat przewoźnika przyjęty przez API) → `zarejestruj_odwolanie`:
++   - zarezerwowany przejazd (`WYBRANA`) dostaje status `ODWOLANA`, a zorganizowana delegacja wraca
++     do etapu „zatwierdzony” (organizacja znów jest niekompletna),
++   - system szuka przejazdów zastępczych na tej samej trasie: dojazd przed rozpoczęciem przedsięwzięcia,
++     powrót nie wcześniej niż po dojeździe i rozpoczęciu zadania, koszt zmiany mieszczący się w budżecie jednostki;
++     gdy żaden kurs w dniu wyjazdu nie zdąży, także dzień wcześniej (z dodatkową dobą noclegu),
++   - propozycje zapisane jako `Przejazd` ze statusem `ALTERNATYWA` (najlepsza z `rekomendowany=True`),
++     powiadomienie delegowanego; brak propozycji → sprawa trafia do osoby odpowiedzialnej (4a).
++2. `wybor.przejazd_alternatywny` (delegowany na ekranie `/app/wnioski/{id}/przejazd-alternatywny`)
++   → `zapisz_wybor_alternatywy`:
++   - wybór: odwołana rezerwacja i niewybrane propozycje → `ANULOWANA`, nowy przejazd → `WYBRANA`,
++     korekta zaangażowanego budżetu, przesunięcie początku noclegu i daty wyjazdu przy wcześniejszym dojeździe,
++     wpis zmiany w poleceniu wyjazdu, potwierdzenie dla delegowanego, `wynik.transport` dla Koordynatora,
++   - odrzucenie wszystkich (3a–4a): propozycje → `DO_UZGODNIENIA`, przekazanie osobie odpowiedzialnej
++     za organizację delegacji i informacja dla delegowanego.
++"""
++
++from datetime import date, datetime, timedelta
++from decimal import Decimal
++
++from sqlalchemy import select
++from sqlalchemy.orm import Session
++
++from ..audit import Decyzja
++from ..db import teraz
++from ..messaging import Komunikat, Typ
++from ..models import (
++    Delegacja,
++    Polaczenie,
++    PolecenieWyjazdu,
++    Przejazd,
++    Status,
++    StatusRezerwacji,
++    Zakwaterowanie,
++    Zolnierz,
++)
++from ..podroze import nazwa_miejscowosci, ocena, przejazdy, przyjazd, termin
++from ..przynaleznosc import jednostka_delegacji
++from .base import BladProcesu, Kontekst
++from .transport import zablokuj_delegacje
++
++# Podróż jeszcze się nie rozpoczęła (warunek początkowy historyjki)
++ETAPY_PRZED_PODROZA = (Status.ZATWIERDZONY, Status.ZORGANIZOWANY)
++TYP_PROPOZYCJI = "Propozycja przejazdu alternatywnego"
++TYP_WYBORU = "Wybór przejazdu alternatywnego"
++
++
++# ---------------------------------------------------------------- zapytania wspólne dla agenta, API i ekranu
++
++
++def odwolane_przejazdy(s: Session, d: Delegacja) -> list[Przejazd]:
++    """Odwołane rezerwacje, które nie zostały jeszcze zastąpione nowym przejazdem."""
++    return [r for r in przejazdy(s, d) if r.status == StatusRezerwacji.ODWOLANA]
++
++
++def przejazdy_alternatywne(s: Session, d: Delegacja) -> list[Przejazd]:
++    """Propozycje zastępcze czekające na wybór delegowanego – rekomendowana jako pierwsza."""
++    propozycje = [r for r in przejazdy(s, d) if r.status == StatusRezerwacji.ALTERNATYWA]
++    return sorted(propozycje, key=lambda r: (not r.rekomendowany, r.id_przejazdu))
++
++
++def dostepny_budzet(s: Session, d: Delegacja) -> Decimal | None:
++    """Budżet jednostki do wykorzystania: przyznany − zaangażowany − wydatkowany (None = brak danych)."""
++    j = jednostka_delegacji(s, d)
++    if j is None:
++        return None
++    return (
++        (j.budzet_delegacji or Decimal("0"))
++        - (j.budzet_wykorzystany or Decimal("0"))
++        - (j.budzet_wydatkowany or Decimal("0"))
++    )
++
++
++def wybrany_nocleg(s: Session, d: Delegacja) -> Zakwaterowanie | None:
++    return s.scalar(
++        select(Zakwaterowanie).where(
++            Zakwaterowanie.id_delegacji == d.id_delegacji,
++            Zakwaterowanie.status == StatusRezerwacji.WYBRANA,
++        )
++    )
++
++
++def koszt_zmiany(s: Session, d: Delegacja, odwolany: Przejazd, polaczenie: Polaczenie, data: date) -> Decimal:
++    """O ile zmiana podnosi koszt delegacji: różnica cen biletów i ewentualne dodatkowe doby noclegu."""
++    roznica = polaczenie.koszt - (odwolany.koszt or Decimal("0"))
++    nocleg = wybrany_nocleg(s, d)
++    if odwolany.kierunek == "Tam" and nocleg is not None and data < nocleg.data_od:
++        roznica += nocleg.cena_za_dobe * (nocleg.data_od - data).days
++    return roznica
++
++
++def _poprawne(p: Polaczenie) -> bool:
++    return (
++        p.czas_min > 0
++        and p.koszt >= 0
++        and 0 <= p.punktualnosc <= 1
++        and 1 <= p.ocena_bezpieczenstwa <= 5
++        and p.liczba_przesiadek >= 0
++    )
++
++
++def _trasa(s: Session, d: Delegacja, odwolany: Przejazd) -> tuple[str, str]:
++    stare = s.get(Polaczenie, odwolany.id_polaczenia) if odwolany.id_polaczenia else None
++    if stare is not None:
++        return stare.skad, stare.dokad
++    jednostka = jednostka_delegacji(s, d)
++    baza, cel = (jednostka.miejscowosc if jednostka else ""), (d.miejsce_docelowe or "")
++    return (baza, cel) if odwolany.kierunek == "Tam" else (cel, baza)
++
++
++def _najwczesniejszy_powrot(s: Session, d: Delegacja) -> datetime | None:
++    """Powrót nie może ruszyć przed dojazdem na miejsce i rozpoczęciem zadania."""
++    tam = next((r for r in przejazdy(s, d) if r.kierunek == "Tam" and r.status == StatusRezerwacji.WYBRANA), None)
++    p_tam = s.get(Polaczenie, tam.id_polaczenia) if tam and tam.id_polaczenia else None
++    granice = [g for g in (przyjazd(p_tam, tam.data_przejazdu) if p_tam else None, termin(s, d)) if g]
++    return max(granice) if granice else None
++
++
++def znajdz_alternatywy(s: Session, d: Delegacja, odwolany: Przejazd) -> list[tuple[Polaczenie, date]]:
++    """Przejazdy zastępcze na tej samej trasie, terminowe i mieszczące się w budżecie – od najlepszego."""
++    skad, dokad = _trasa(s, d, odwolany)
++    deadline = termin(s, d) if odwolany.kierunek == "Tam" else None
++    powrot_od = _najwczesniejszy_powrot(s, d) if odwolany.kierunek == "Powrót" else None
++    polaczenia = [
++        p
++        for p in s.scalars(select(Polaczenie))
++        if p.id_polaczenia != odwolany.id_polaczenia
++        and not p.id_polaczenia.startswith("M-")  # oferty ręczne należą do innych delegacji
++        and nazwa_miejscowosci(p.skad) == nazwa_miejscowosci(skad)
++        and nazwa_miejscowosci(p.dokad) == nazwa_miejscowosci(dokad)
++        and _poprawne(p)
++    ]
++
++    def kandydaci(data: date) -> list[tuple[Polaczenie, date]]:
++        wynik = []
++        for p in polaczenia:
++            if deadline is not None and przyjazd(p, data) > deadline:
++                continue
++            if powrot_od is not None and datetime.combine(data, p.godzina_odjazdu) < powrot_od:
++                continue
++            wynik.append((p, data))
++        return wynik
++
++    oferty = kandydaci(odwolany.data_przejazdu)
++    dzien_wczesniej = odwolany.data_przejazdu - timedelta(days=1)
++    if not oferty and odwolany.kierunek == "Tam" and dzien_wczesniej > teraz().date():
++        oferty = kandydaci(dzien_wczesniej)
++    budzet = dostepny_budzet(s, d)
++    if budzet is not None:
++        oferty = [(p, data) for p, data in oferty if koszt_zmiany(s, d, odwolany, p, data) <= budzet]
++    return sorted(oferty, key=lambda o: ocena(o[0], o[1], deadline))
++
++
++def przekaz_odpowiedzialnemu(s: Session, d: Delegacja, ktx: Kontekst, powod: str) -> str | None:
++    """Scenariusz 4a: osoba odpowiedzialna za organizację delegacji przejmuje sprawę przejazdu."""
++    wnioskodawca = s.get(Zolnierz, d.id_zolnierza)
++    odpowiedzialny = d.id_zatwierdzajacego or (wnioskodawca.id_przelozonego if wnioskodawca else None)
++    if odpowiedzialny:
++        ktx.wyslij(
++            Typ.POWIADOMIENIE,
++            {"do": odpowiedzialny, "tresc": f"Delegacja {d.id_delegacji}: {powod} – zorganizuj przejazd indywidualnie"},
++        )
++    tresc = f"Sprawę przejazdu delegacji {d.id_delegacji} przekazano osobie odpowiedzialnej za organizację"
++    ktx.wyslij(
++        Typ.POWIADOMIENIE, {"do": d.id_zolnierza, "tresc": tresc + (f" ({odpowiedzialny})" if odpowiedzialny else "")}
++    )
++    return odpowiedzialny
++
++
++def _opis(r: Przejazd, p: Polaczenie | None) -> str:
++    kurs = f"{p.przewoznik} {p.godzina_odjazdu:%H:%M}" if p else r.srodek_transportu
++    return f"{r.kierunek} {r.data_przejazdu:%d.%m.%Y}: {kurs}"
++
++
++# ---------------------------------------------------------------- 1. odwołanie przejazdu (podzadanie 134)
++
++
++def zarejestruj_odwolanie(s: Session, k: Komunikat, ktx: Kontekst) -> None:
++    d = zablokuj_delegacje(s, k.id_delegacji)
++    r = s.get(Przejazd, k.dane.get("id_przejazdu"))
++    if r is None or r.id_delegacji != d.id_delegacji:
++        raise BladProcesu("Nie znaleziono przejazdu tej delegacji")
++    if r.status in (StatusRezerwacji.ODWOLANA, StatusRezerwacji.ANULOWANA):
++        ktx.opis = "Odwołanie tego przejazdu zostało już odnotowane – pominięto ponowienie"
++        return
++    if r.status != StatusRezerwacji.WYBRANA:
++        ktx.ostrzezenie(f"Przejazd ma status „{r.status}” – odwołanie dotyczy tylko zarezerwowanego przejazdu")
++        return
++    if d.status not in ETAPY_PRZED_PODROZA or r.data_przejazdu < teraz().date():
++        ktx.ostrzezenie("Podróż już się rozpoczęła – odwołanie wymaga obsługi w trakcie wyjazdu")
++        return
++
++    przyczyna = str(k.dane.get("przyczyna") or "").strip() or "przewoźnik nie podał przyczyny"
++    stare = s.get(Polaczenie, r.id_polaczenia) if r.id_polaczenia else None
++    r.status = StatusRezerwacji.ODWOLANA
++    r.powod_zmiany = f"Odwołany przez przewoźnika: {przyczyna}"
++    if d.status == Status.ZORGANIZOWANY:
++        d.ustaw_status(Status.ZATWIERDZONY)  # organizacja wyjazdu znów jest niekompletna
++
++    oferty = znajdz_alternatywy(s, d, r)
++    for nr, (p, data) in enumerate(oferty):
++        zmiana = koszt_zmiany(s, d, r, p, data)
++        uwagi = [f"przyjazd {przyjazd(p, data):%d.%m %H:%M}"]
++        if data != r.data_przejazdu:
++            uwagi.append("wyjazd dzień wcześniej z dodatkową dobą noclegu")
++        uwagi.append(f"zmiana kosztu {zmiana:+.2f} zł")
++        s.add(
++            Przejazd(
++                id_delegacji=d.id_delegacji,
++                kierunek=r.kierunek,
++                srodek_transportu=p.srodek_transportu,
++                data_przejazdu=data,
++                id_polaczenia=p.id_polaczenia,
++                koszt=p.koszt,
++                koszt_indywidualny=p.koszt,
++                status=StatusRezerwacji.ALTERNATYWA,
++                rekomendowany=nr == 0,
++                uzasadnienie=("Rekomendowany zamiennik: " if nr == 0 else "Zamiennik: ") + ", ".join(uwagi) + ".",
++                powod_zmiany=f"Zamiennik odwołanego przejazdu #{r.id_przejazdu}",
++            )
++        )
++    s.flush()
++
++    odwolany = _opis(r, stare)
++    ktx.decyzja(
++        Decyzja(
++            typ=TYP_PROPOZYCJI,
++            wybrany_wariant=f"{r.kierunek}: {oferty[0][0].id_polaczenia}" if oferty else "Do uzgodnienia",
++            liczba_wariantow=len(oferty),
++            uzasadnienie=f"Odwołano: {odwolany} ({przyczyna}). Kryteria: dojazd przed rozpoczęciem zadania, "
++            "budżet jednostki; następnie koszt, bezpieczeństwo, przesiadki, punktualność i czas.",
++            decyzja_finansowa=True,
++        )
++    )
++    if not oferty:
++        ktx.ostrzezenie(f"Odwołano {odwolany}; brak przejazdu zastępczego z terminowym dojazdem w budżecie")
++        przekaz_odpowiedzialnemu(s, d, ktx, f"przewoźnik odwołał przejazd ({odwolany}), brak zamiennika")
++        return
++    ktx.opis = f"Odwołano {odwolany}; propozycje zastępcze: {len(oferty)}"
++    ktx.wyslij(
++        Typ.POWIADOMIENIE,
++        {
++            "do": d.id_zolnierza,
++            "tresc": f"Przewoźnik odwołał przejazd {odwolany} (delegacja {d.id_delegacji}, przyczyna: {przyczyna}). "
++            f"Wybierz przejazd alternatywny – przygotowano propozycji: {len(oferty)}.",
++        },
++    )
++
++
++# ---------------------------------------------------------------- 2. wybór lub odrzucenie zamiennika (135, 137)
++
++
++def _dopisz_do_polecenia(s: Session, d: Delegacja, zmiana: dict) -> bool:
++    polecenie = s.scalar(select(PolecenieWyjazdu).where(PolecenieWyjazdu.id_delegacji == d.id_delegacji))
++    if polecenie is None:
++        return False
++    tresc = dict(polecenie.tresc or {})  # nowy słownik – zmiana kolumny JSON musi być widoczna dla sesji
++    tresc["termin"] = {
++        "od": d.data_wyjazdu.isoformat() if d.data_wyjazdu else None,
++        "do": d.data_powrotu.isoformat() if d.data_powrotu else None,
++    }
++    tresc["zmiany_przejazdu"] = [*tresc.get("zmiany_przejazdu", []), zmiana]
++    polecenie.tresc = tresc
++    return True
++
++
++def zapisz_wybor_alternatywy(s: Session, k: Komunikat, ktx: Kontekst) -> None:
++    d = zablokuj_delegacje(s, k.id_delegacji)
++    if k.dane.get("id_osoby") != d.id_zolnierza:
++        raise BladProcesu("Przejazd alternatywny wybiera delegowany")
++    propozycje = przejazdy_alternatywne(s, d)
++    if not propozycje:
++        ktx.opis = "Brak propozycji oczekujących na wybór – decyzja została już zapisana"
++        return
++    uzasadnienie = str(k.dane.get("uzasadnienie") or "").strip()
++
++    if k.dane.get("odrzuc_wszystkie"):
++        if not uzasadnienie:
++            raise BladProcesu("Podaj przyczynę odrzucenia wszystkich przejazdów alternatywnych")
++        for p in propozycje:
++            p.status = StatusRezerwacji.DO_UZGODNIENIA
++            p.uzasadnienie = uzasadnienie
++        ktx.decyzja(
++            Decyzja(
++                typ=TYP_WYBORU,
++                wybrany_wariant="Do uzgodnienia",
++                liczba_wariantow=len(propozycje),
++                uzasadnienie=f"Delegowany odrzucił wszystkie propozycje: {uzasadnienie}",
++            )
++        )
++        odpowiedzialny = przekaz_odpowiedzialnemu(
++            s, d, ktx, f"delegowany odrzucił przejazdy alternatywne ({uzasadnienie})"
++        )
++        ktx.ostrzezenie(f"Odrzucono przejazdy alternatywne – sprawę przekazano: {odpowiedzialny or 'brak osoby'}")
++        return
++
++    nowy = next((p for p in propozycje if p.id_przejazdu == k.dane.get("id_przejazdu")), None)
++    if nowy is None:
++        raise BladProcesu("Wybierz jeden z przedstawionych przejazdów alternatywnych")
++    stary = next((r for r in odwolane_przejazdy(s, d) if r.kierunek == nowy.kierunek), None)
++    polaczenie = s.get(Polaczenie, nowy.id_polaczenia) if nowy.id_polaczenia else None
++    koszt = (
++        koszt_zmiany(s, d, stary, polaczenie, nowy.data_przejazdu)
++        if stary is not None and polaczenie is not None
++        else Decimal("0")
++    )
++    budzet = dostepny_budzet(s, d)
++    if budzet is not None and koszt > budzet:
++        raise BladProcesu("Wybrany przejazd przekracza dostępny budżet jednostki")
++
++    # podzadanie 135: anulowanie dotychczasowej rezerwacji i rezerwacja nowego przejazdu
++    if stary is not None:
++        stary.status = StatusRezerwacji.ANULOWANA
++        stary.powod_zmiany = (
++            f"{stary.powod_zmiany or ''}\nRezerwacja anulowana – zastąpiona przejazdem #{nowy.id_przejazdu}"
++        )
++    for p in propozycje:
++        if p is not nowy:
++            p.status = StatusRezerwacji.ANULOWANA
++            p.uzasadnienie = "Nie wybrano – delegowany wybrał inny przejazd zastępczy"
++    nowy.status = StatusRezerwacji.WYBRANA
++    nowy.uzasadnienie = uzasadnienie or "Wybrany przez delegowanego po odwołaniu przejazdu"
++
++    zmiany = [f"nowy przejazd {_opis(nowy, polaczenie)}"]
++    jednostka = jednostka_delegacji(s, d)
++    if jednostka is not None and koszt:
++        jednostka.budzet_wykorzystany = max(Decimal("0"), (jednostka.budzet_wykorzystany or Decimal("0")) + koszt)
++        zmiany.append(f"budżet jednostki {koszt:+.2f} zł")
++    nocleg = wybrany_nocleg(s, d)
++    if nowy.kierunek == "Tam" and nocleg is not None and nowy.data_przejazdu < nocleg.data_od:
++        nocleg.data_od = nowy.data_przejazdu
++        nocleg.koszt_calkowity = nocleg.cena_za_dobe * max(1, (nocleg.data_do - nocleg.data_od).days)
++        zmiany.append(f"nocleg od {nocleg.data_od:%d.%m.%Y}")
++    if nowy.kierunek == "Tam" and d.data_wyjazdu and nowy.data_przejazdu < d.data_wyjazdu:
++        d.data_wyjazdu = nowy.data_przejazdu
++        zmiany.append(f"wyjazd {d.data_wyjazdu:%d.%m.%Y}")
++    if _dopisz_do_polecenia(
++        s,
++        d,
++        {
++            "data": teraz().isoformat(timespec="minutes"),
++            "odwolany": _opis(stary, s.get(Polaczenie, stary.id_polaczenia) if stary.id_polaczenia else None)
++            if stary
++            else None,
++            "nowy": _opis(nowy, polaczenie),
++            "przyczyna": (stary.powod_zmiany or "").splitlines()[0] if stary else None,
++        },
++    ):
++        zmiany.append("polecenie wyjazdu zaktualizowane")
++
++    ktx.opis = "Zmiana przejazdu: " + "; ".join(zmiany)
++    ktx.decyzja(
++        Decyzja(
++            typ=TYP_WYBORU,
++            wybrany_wariant=f"{nowy.kierunek}: {nowy.id_polaczenia}",
++            liczba_wariantow=len(propozycje),
++            uzasadnienie=f"Osoba: {k.dane['id_osoby']}; " + (uzasadnienie or "wybór zamiennika") + "; " + ktx.opis,
++            decyzja_finansowa=koszt > 0,
++        )
++    )
++    ktx.wyslij(
++        Typ.POWIADOMIENIE,
++        {
++            "do": d.id_zolnierza,
++            "tresc": f"Potwierdzenie zmiany przejazdu delegacji {d.id_delegacji}: " + "; ".join(zmiany),
++        },
++    )
++    ktx.wyslij(Typ.WYNIK_TRANSPORTU)  # Koordynator sprawdzi, czy wyjazd jest znów zorganizowany
+diff --git a/src/kwatermistrz/api/organizacja.py b/src/kwatermistrz/api/organizacja.py
+index 95185e0..fef109f 100644
+--- a/src/kwatermistrz/api/organizacja.py
++++ b/src/kwatermistrz/api/organizacja.py
+@@ -9,15 +9,30 @@ Zrobione:
+ - S22IT1S0P2-27: `GET /delegacje/{id}/warianty-podrozy` – propozycje z rekomendacją (`Przejazd`, status propozycja),
+   `POST /delegacje/{id}/wybor-podrozy` – wybór wariantu z przyczyną albo odrzucenie wszystkich
+   → komunikat `Typ.WYBOR_TRANSPORTU`.
++- S22IT1S0P2-17: `POST /delegacje/{id}/przejazdy/{id_przejazdu}/odwolanie` – komunikat przewoźnika o odwołaniu
++  zarezerwowanego przejazdu → `Typ.ODWOLANIE_PRZEJAZDU`; `GET /delegacje/{id}/przejazdy-alternatywne` – propozycje
++  zastępcze; `POST /delegacje/{id}/wybor-przejazdu-alternatywnego` – wybór albo odrzucenie wszystkich
++  → `Typ.WYBOR_PRZEJAZDU_ALTERNATYWNEGO`.
+ """
+ 
+ from fastapi import APIRouter, Depends, HTTPException, Request
+-from pydantic import BaseModel, Field
++from pydantic import BaseModel, Field, model_validator
+ from sqlalchemy import select
+ from sqlalchemy.orm import Session
+ 
++from ..agents.zmiana_przejazdu import ETAPY_PRZED_PODROZA, przejazdy_alternatywne
++from ..db import teraz
+ from ..messaging import Broker, Komunikat, Typ
+-from ..models import ObiektZakwaterowania, PolecenieWyjazdu, Status, StatusRezerwacji, Zakwaterowanie, Zolnierz
++from ..models import (
++    ObiektZakwaterowania,
++    Polaczenie,
++    PolecenieWyjazdu,
++    Przejazd,
++    Status,
++    StatusRezerwacji,
++    Zakwaterowanie,
++    Zolnierz,
++)
+ from ..podroze import (
+     BladPodrozy,
+     Kryterium,
+@@ -105,6 +120,126 @@ async def wybor_podrozy(
+     return await przyjmij_wybor(s, broker, id_delegacji, uzytkownik, wybor)
+ 
+ 
++# ---------------------------------------------------------------- S22IT1S0P2-17: odwołanie przejazdu
++
++
++class OdwolanieIn(BaseModel):
++    """Komunikat przewoźnika o odwołaniu zarezerwowanego kursu."""
++
++    przyczyna: str = Field(min_length=3, max_length=500)
++    przewoznik: str | None = Field(None, max_length=100)
++
++
++class WyborAlternatywyIn(BaseModel):
++    id_przejazdu: int | None = Field(None, gt=0)
++    odrzuc_wszystkie: bool = False
++    uzasadnienie: str = Field("", max_length=500)
++
++    @model_validator(mode="after")
++    def sprawdz(self):
++        if self.odrzuc_wszystkie:
++            if self.id_przejazdu is not None:
++                raise ValueError("Odrzucenie wszystkich nie może zawierać wybranego przejazdu")
++            if not self.uzasadnienie.strip():
++                raise ValueError("Podaj przyczynę odrzucenia wszystkich przejazdów alternatywnych")
++        elif self.id_przejazdu is None:
++            raise ValueError("Wybierz przejazd alternatywny")
++        return self
++
++
++@router.post("/delegacje/{id_delegacji}/przejazdy/{id_przejazdu}/odwolanie", status_code=202)
++async def odwolanie_przejazdu(
++    id_delegacji: str,
++    id_przejazdu: int,
++    odwolanie: OdwolanieIn,
++    s: Session = Depends(get_sesja),
++    broker: Broker = Depends(get_broker),
++):
++    """Przewoźnik odwołuje zarezerwowany przejazd przed rozpoczęciem podróży (integracja symulowana).
++
++    Agent Monitorujący zapisze odwołanie, przygotuje przejazdy alternatywne i powiadomi delegowanego.
++    """
++    d = pobierz_delegacje(s, id_delegacji)
++    r = s.get(Przejazd, id_przejazdu)
++    if r is None or r.id_delegacji != id_delegacji:
++        raise HTTPException(404, "Nie znaleziono przejazdu tej delegacji")
++    if r.status != StatusRezerwacji.WYBRANA:
++        raise HTTPException(409, "Odwołać można tylko zarezerwowany przejazd")
++    if d.status not in ETAPY_PRZED_PODROZA or r.data_przejazdu < teraz().date():
++        raise HTTPException(409, "Podróż już się rozpoczęła – zmianę obsługuje się w trakcie wyjazdu")
++    przyczyna = odwolanie.przyczyna.strip()
++    if odwolanie.przewoznik:
++        przyczyna = f"{odwolanie.przewoznik.strip()}: {przyczyna}"
++    await broker.publikuj(
++        Komunikat(
++            typ=Typ.ODWOLANIE_PRZEJAZDU,
++            id_delegacji=id_delegacji,
++            dane={"id_przejazdu": id_przejazdu, "przyczyna": przyczyna},
++        )
++    )
++    return {"przyjeto": True, "komunikat": "Odwołanie przekazane do Agenta Monitorującego"}
++
++
++def opis_alternatywy(s: Session, r: Przejazd) -> dict:
++    p = s.get(Polaczenie, r.id_polaczenia) if r.id_polaczenia else None
++    return {
++        "id_przejazdu": r.id_przejazdu,
++        "kierunek": r.kierunek,
++        "data_przejazdu": r.data_przejazdu,
++        "srodek_transportu": r.srodek_transportu,
++        "przewoznik": p.przewoznik if p else None,
++        "godzina_odjazdu": p.godzina_odjazdu if p else None,
++        "godzina_przyjazdu": p.godzina_przyjazdu if p else None,
++        "koszt": r.koszt,
++        "rekomendowany": r.rekomendowany,
++        "uzasadnienie": r.uzasadnienie,
++    }
++
++
++@router.get("/delegacje/{id_delegacji}/przejazdy-alternatywne")
++def alternatywy_przejazdu(
++    id_delegacji: str,
++    s: Session = Depends(get_sesja),
++    uzytkownik: Zolnierz = Depends(uzytkownik_sesji),
++):
++    d = dostep_do_podrozy(s, id_delegacji, uzytkownik)
++    return [opis_alternatywy(s, r) for r in przejazdy_alternatywne(s, d)]
++
++
++async def przyjmij_wybor_alternatywy(
++    s: Session, broker: Broker, id_delegacji: str, u: Zolnierz, wybor: WyborAlternatywyIn
++) -> dict:
++    d = dostep_do_podrozy(s, id_delegacji, u)
++    if u.id_zolnierza != d.id_zolnierza:
++        raise HTTPException(403, "Przejazd alternatywny wybiera delegowany")
++    propozycje = przejazdy_alternatywne(s, d)
++    if not propozycje:
++        raise HTTPException(409, "Brak przejazdów alternatywnych oczekujących na wybór")
++    if not wybor.odrzuc_wszystkie and all(p.id_przejazdu != wybor.id_przejazdu for p in propozycje):
++        raise HTTPException(409, "Wybierz jeden z przedstawionych przejazdów alternatywnych")
++    await broker.publikuj(
++        Komunikat(
++            typ=Typ.WYBOR_PRZEJAZDU_ALTERNATYWNEGO,
++            id_delegacji=id_delegacji,
++            dane={**wybor.model_dump(), "uzasadnienie": wybor.uzasadnienie.strip(), "id_osoby": u.id_zolnierza},
++        )
++    )
++    return {"przyjeto": True, "komunikat": "Wybór przekazany do Agenta Monitorującego"}
++
++
++@router.post("/delegacje/{id_delegacji}/wybor-przejazdu-alternatywnego", status_code=202)
++async def wybor_przejazdu_alternatywnego(
++    id_delegacji: str,
++    wybor: WyborAlternatywyIn,
++    request: Request,
++    s: Session = Depends(get_sesja),
++    broker: Broker = Depends(get_broker),
++    uzytkownik: Zolnierz = Depends(uzytkownik_sesji),
++):
++    sprawdz_csrf(request, request.headers.get("X-CSRF-Token"))
++    return await przyjmij_wybor_alternatywy(s, broker, id_delegacji, uzytkownik, wybor)
++
++
+ # ---------------------------------------------------------------- S22IT1S0P2-38: polecenie wyjazdu
+ 
+ 
+diff --git a/src/kwatermistrz/messaging.py b/src/kwatermistrz/messaging.py
+index 64f3547..719f685 100644
+--- a/src/kwatermistrz/messaging.py
++++ b/src/kwatermistrz/messaging.py
+@@ -37,6 +37,9 @@ class Typ:
+     WYNIK_ZAKWATEROWANIA = "wynik.zakwaterowanie"
+     # Realizacja (sprint 3)
+     ZADANIE_MONITOROWANIA = "zadanie.monitorowanie"
++    # Zmiana przejazdu po odwołaniu przez przewoźnika (S22IT1S0P2-17)
++    ODWOLANIE_PRZEJAZDU = "zdarzenie.odwolanie_przejazdu"
++    WYBOR_PRZEJAZDU_ALTERNATYWNEGO = "wybor.przejazd_alternatywny"
+     # Rozliczenie (S22IT1S0P2-36, -20, -43)
+     ZADANIE_ROZLICZENIA = "zadanie.rozliczenie"
+     WYNIK_ROZLICZENIA = "wynik.rozliczenie"
+diff --git a/src/kwatermistrz/models.py b/src/kwatermistrz/models.py
+index 4f3f6cd..f788ff6 100644
+--- a/src/kwatermistrz/models.py
++++ b/src/kwatermistrz/models.py
+@@ -35,6 +35,10 @@ class StatusRezerwacji:
+     WYBRANA = "wybrana"
+     DO_DECYZJI_PRZELOZONEGO = "do decyzji przełożonego"  # wariant wymagający odstępstwa (-39)
+     DO_UZGODNIENIA = "do uzgodnienia"  # odrzucono wszystkie warianty (-27)
++    # S22IT1S0P2-17: odwołanie przejazdu przez przewoźnika i przejazdy zastępcze
++    ODWOLANA = "odwołana"  # zarezerwowany przejazd odwołany przez przewoźnika
++    ALTERNATYWA = "alternatywa"  # przejazd zastępczy czekający na wybór delegowanego
++    ANULOWANA = "anulowana"  # rezerwacja zastąpiona innym przejazdem albo niewybrana alternatywa
+ 
+ 
+ class StatusRozliczenia:
+diff --git a/src/kwatermistrz/web/strony.py b/src/kwatermistrz/web/strony.py
+index 6a70650..54f554d 100644
+--- a/src/kwatermistrz/web/strony.py
++++ b/src/kwatermistrz/web/strony.py
+@@ -852,7 +852,10 @@ def dane_wniosku(s: Session, id_delegacji: str, uzytkownik: Zolnierz) -> dict:
+         oczekiwanie = "Wniosek oczekuje na decyzję przełożonego."
+     elif d.status == Status.ZATWIERDZONY:
+         warianty = list(s.scalars(select(Przejazd).where(Przejazd.id_delegacji == id_delegacji)))
+-        if decyzja_do_uzgodnienia(s, d) or any(r.status == StatusRezerwacji.DO_UZGODNIENIA for r in warianty):
++        if any(r.status == StatusRezerwacji.ALTERNATYWA for r in warianty):  # S22IT1S0P2-17
++            oczekiwanie = "Przewoźnik odwołał przejazd. Oczekiwanie na wybór przejazdu alternatywnego."
++            odswiezaj = False
++        elif decyzja_do_uzgodnienia(s, d) or any(r.status == StatusRezerwacji.DO_UZGODNIENIA for r in warianty):
+             oczekiwanie = "Podróż została przekazana do dodatkowego uzgodnienia."
+             odswiezaj = False
+         elif {"Tam", "Powrót"} <= {r.kierunek for r in warianty if r.status == StatusRezerwacji.WYBRANA}:
+@@ -890,6 +893,12 @@ def dane_wniosku(s: Session, id_delegacji: str, uzytkownik: Zolnierz) -> dict:
+         status_boczny=d.status in ETAP_STATUSU_BOCZNEGO,
+         przypomnienie=przypomnienie,
+         przekazanie=przekazanie,
++        odwolany_przejazd=s.scalar(  # S22IT1S0P2-17: link do wyboru przejazdu alternatywnego
++            select(Przejazd.id_przejazdu).where(
++                Przejazd.id_delegacji == id_delegacji, Przejazd.status == StatusRezerwacji.ODWOLANA
++            )
++        )
++        is not None,
+         ostatnia_aktywnosc=ostatnia_aktywnosc,
+         nieaktualny=(d.status == Status.ZLOZONY or (d.status == Status.ZATWIERDZONY and not wynik_transportu))
+         and teraz() - ostatnia_aktywnosc > NIEAKTUALNY_PO,
+diff --git a/src/kwatermistrz/web/szablony/przejazd.html b/src/kwatermistrz/web/szablony/przejazd.html
+index 81c54d1..bf81725 100644
+--- a/src/kwatermistrz/web/szablony/przejazd.html
++++ b/src/kwatermistrz/web/szablony/przejazd.html
+@@ -19,6 +19,14 @@
+   {%- if pol %}<br><small>{{ pol.przewoznik }} · {{ pol.skad }} → {{ pol.dokad }}</small>{% endif %}
+ {%- endmacro %}
+ 
++{# S22IT1S0P2-17: odwołany przejazd czeka na wybór zamiennika #}
++{% if odwolane %}
++<p class="komunikat ostrzezenie" role="status">
++  Przewoźnik odwołał przejazd {% for p in odwolane %}{{ p.kierunek | lower }} ({{ p.data_przejazdu.strftime('%d.%m.%Y') }}){% if not loop.last %}, {% endif %}{% endfor %}.
++  <a href="/app/wnioski/{{ d.id_delegacji }}/przejazd-alternatywny">Wybierz przejazd alternatywny</a>
++</p>
++{% endif %}
++
+ {% if wybrane %}
+ <article>
+   <header><strong>Wybrany przejazd</strong></header>
+diff --git a/src/kwatermistrz/web/szablony/przejazd_alternatywny.html b/src/kwatermistrz/web/szablony/przejazd_alternatywny.html
+new file mode 100644
+index 0000000..d214a05
+--- /dev/null
++++ b/src/kwatermistrz/web/szablony/przejazd_alternatywny.html
+@@ -0,0 +1,100 @@
++{% extends "baza.html" %}
++{% block tytul %}Przejazd alternatywny – {{ d.id_delegacji }}{% endblock %}
++{% block tresc %}
++<p><a href="/app/wnioski/{{ d.id_delegacji }}">← Wniosek {{ d.id_delegacji }}</a></p>
++
++<div class="naglowek-strony">
++  <h2>Zmiana przejazdu</h2>
++  <span class="status duzy {{ d.status | klasa_statusu }}">{{ d.status }}</span>
++</div>
++
++{% if komunikat %}
++<p class="{{ 'bledy' if blad else 'komunikat' }}" role="{{ 'alert' if blad else 'status' }}">{{ komunikat }}</p>
++{% endif %}
++
++{# S22IT1S0P2-17 (krok 2): informacja o odwołaniu przejazdu przez przewoźnika #}
++{% macro opis_kursu(p) -%}
++  {%- set pol = polaczenia.get(p.id_polaczenia) if p.id_polaczenia else none -%}
++  <strong>{{ p.srodek_transportu }}</strong>
++  {%- if pol %} · {{ pol.przewoznik }}<br><small>{{ pol.skad }} → {{ pol.dokad }}</small>{% endif %}
++{%- endmacro %}
++
++{% for p in odwolane %}
++{% set pol = polaczenia.get(p.id_polaczenia) if p.id_polaczenia else none %}
++<article class="komunikat ostrzezenie" role="status">
++  <p><strong>Przewoźnik odwołał przejazd {{ p.kierunek | lower }}</strong> –
++    {{ p.data_przejazdu.strftime('%d.%m.%Y') }}{% if pol %}, {{ pol.godzina_odjazdu.strftime('%H:%M') }}{% endif %}:
++    {{ opis_kursu(p) }}</p>
++  {% if p.powod_zmiany %}<p><small>{{ p.powod_zmiany.splitlines()[0] }}</small></p>{% endif %}
++</article>
++{% endfor %}
++
++{% if propozycje %}
++<p>Wybierz przejazd zastępczy. Wszystkie propozycje zapewniają przybycie na czas
++  {%- if budzet is not none %} i mieszczą się w dostępnym budżecie jednostki ({{ budzet | kwota }}){% endif %}.
++  Po wyborze system anuluje odwołaną rezerwację, zarezerwuje nowy przejazd i zaktualizuje dokumentację delegacji.</p>
++
++<form method="post" action="/app/wnioski/{{ d.id_delegacji }}/przejazd-alternatywny">
++  <fieldset>
++    <legend><strong>Przejazdy alternatywne</strong></legend>
++    <div class="overflow-auto">
++      <table>
++        <thead>
++          <tr>
++            <th scope="col">Przejazd</th>
++            <th scope="col">Data</th>
++            <th scope="col">Odjazd – przyjazd</th>
++            <th scope="col">Przesiadki</th>
++            <th scope="col">Koszt</th>
++          </tr>
++        </thead>
++        <tbody>
++          {% for p in propozycje %}
++          {% set pol = polaczenia.get(p.id_polaczenia) if p.id_polaczenia else none %}
++          {% set zaznacz = (p.id_przejazdu == zaznaczony) if zaznaczony else p.rekomendowany %}
++          <tr>
++            <td>
++              <label>
++                <input type="radio" name="id_przejazdu" value="{{ p.id_przejazdu }}" required {% if zaznacz %}checked{% endif %}>
++                {{ opis_kursu(p) }}
++              </label>
++              {% if p.rekomendowany %}<mark>rekomendowany</mark>{% endif %}
++              {% if p.uzasadnienie %}<br><small>{{ p.uzasadnienie }}</small>{% endif %}
++            </td>
++            <td class="bez-lamania">{{ p.data_przejazdu.strftime('%d.%m.%Y') }}</td>
++            <td class="bez-lamania">{% if pol %}{{ pol.godzina_odjazdu.strftime('%H:%M') }} – {{ pol.godzina_przyjazdu.strftime('%H:%M') }}{% else %}–{% endif %}</td>
++            <td>{% if pol %}{{ pol.liczba_przesiadek }}{% else %}–{% endif %}</td>
++            <td class="bez-lamania">{% if p.koszt is not none %}{{ p.koszt | kwota }}{% else %}–{% endif %}</td>
++          </tr>
++          {% endfor %}
++        </tbody>
++      </table>
++    </div>
++  </fieldset>
++  <input type="hidden" name="csrf" value="{{ csrf }}">
++  <label for="uzasadnienie">Uwagi do wyboru <small>(opcjonalnie)</small>
++    <textarea id="uzasadnienie" name="uzasadnienie" rows="2" maxlength="500">{{ uzasadnienie or '' }}</textarea>
++  </label>
++  <button type="submit">Wybierz przejazd alternatywny</button>
++</form>
++
++{# Scenariusz 3a–4a: żaden zamiennik nie odpowiada delegowanemu #}
++<details>
++  <summary>Żaden przejazd mi nie odpowiada</summary>
++  <form method="post" action="/app/wnioski/{{ d.id_delegacji }}/przejazd-alternatywny/odrzucenie">
++    <input type="hidden" name="csrf" value="{{ csrf }}">
++    <label for="przyczyna">Przyczyna odrzucenia *
++      <textarea id="przyczyna" name="przyczyna" rows="2" maxlength="500" required></textarea>
++    </label>
++    <button type="submit" class="secondary">Odrzuć i przekaż do organizatora</button>
++  </form>
++</details>
++{% elif odwolane %}
++<p class="komunikat" role="status">Brak przejazdu zastępczego, który zapewnia przybycie na czas w budżecie jednostki,
++  albo propozycje zostały odrzucone. Sprawę przejazdu przejęła osoba odpowiedzialna za organizację delegacji.</p>
++{% elif not komunikat %}
++<p>Żaden przejazd tej delegacji nie został odwołany.</p>
++{% endif %}
++
++<p><a href="/app/wnioski/{{ d.id_delegacji }}/przejazd">Zobacz zarezerwowane przejazdy</a></p>
++{% endblock %}
+diff --git a/src/kwatermistrz/web/szablony/wniosek.html b/src/kwatermistrz/web/szablony/wniosek.html
+index f5d332f..ce58ae4 100644
+--- a/src/kwatermistrz/web/szablony/wniosek.html
++++ b/src/kwatermistrz/web/szablony/wniosek.html
+@@ -8,6 +8,10 @@
+ <article>
+   <header><strong>Organizacja wyjazdu</strong></header>
+   <p>Wybierz przejazd{% if d.potrzeba_zakwaterowania %} i zakwaterowanie{% endif %} spośród propozycji przygotowanych przez system.</p>
++  {% if odwolany_przejazd %}
++  <p class="komunikat ostrzezenie" role="status">Przewoźnik odwołał zarezerwowany przejazd.
++    <a href="/app/wnioski/{{ d.id_delegacji }}/przejazd-alternatywny">Wybierz przejazd alternatywny</a></p>
++  {% endif %}
+   <div class="przyciski-formularza">
+     <a role="button" href="/app/wnioski/{{ d.id_delegacji }}/przejazd">Przejazd</a>
+     {% if d.potrzeba_zakwaterowania %}
+diff --git a/src/kwatermistrz/web/wyjazd.py b/src/kwatermistrz/web/wyjazd.py
+index 4a13520..a0fc44e 100644
+--- a/src/kwatermistrz/web/wyjazd.py
++++ b/src/kwatermistrz/web/wyjazd.py
+@@ -17,7 +17,8 @@ from pydantic import ValidationError
+ from sqlalchemy import select
+ from sqlalchemy.orm import Session
+ 
+-from ..api.organizacja import przyjmij_wybor
++from ..agents.zmiana_przejazdu import dostepny_budzet, odwolane_przejazdy, przejazdy_alternatywne
++from ..api.organizacja import WyborAlternatywyIn, przyjmij_wybor, przyjmij_wybor_alternatywy
+ from ..api.zaleznosci import chron_formularze, get_broker, get_sesja, sprawdz_csrf
+ from ..messaging import Broker, Komunikat, Typ
+ from ..models import (
+@@ -40,9 +41,15 @@ ETAPY_ORGANIZACJI = (Status.ZATWIERDZONY, Status.ZORGANIZOWANY)
+ KIERUNKI = ("Tam", "Powrót")
+ WYNIK_WYBOR = "wybor-przekazany"
+ WYNIK_ODRZUCENIE = "warianty-odrzucone"
++WYNIK_ZMIANA = "zmiana-przejazdu"
++WYNIK_ODRZUCENIE_ALTERNATYW = "alternatywy-odrzucone"
+ KOMUNIKATY = {
+     WYNIK_WYBOR: "Wybór przekazany – system zapisze go i uzupełni dokumentację delegacji.",
+     WYNIK_ODRZUCENIE: "Odrzucono zaproponowane warianty – przejazd zostanie uzgodniony indywidualnie.",
++    WYNIK_ZMIANA: "Wybór przekazany – system anuluje odwołaną rezerwację, zarezerwuje nowy przejazd "
++    "i zaktualizuje dokumentację delegacji.",
++    WYNIK_ODRZUCENIE_ALTERNATYW: "Odrzucono przejazdy alternatywne – sprawę przejmie osoba odpowiedzialna "
++    "za organizację delegacji.",
+ }
+ 
+ 
+@@ -88,6 +95,7 @@ def dane_przejazdu(s: Session, d: Delegacja) -> dict:
+         warianty={k: [p for p in propozycje if p.kierunek == k] for k in kierunki},
+         polaczenia=polaczenia,
+         wybrane=wybrane,
++        odwolane=[p for p in przejazdy if p.status == StatusRezerwacji.ODWOLANA],  # S22IT1S0P2-17
+         do_uzgodnienia=do_uzgodnienia,
+         rekomendowane={w["id_przejazdu"] for w in porownanie["warianty"] if w["rekomendowany"]},
+         mozna_wybrac=d.status == Status.ZATWIERDZONY and bool(propozycje) and not wybrane and not do_uzgodnienia,
+@@ -225,6 +233,103 @@ async def odrzuc_warianty_przejazdu(
+     return RedirectResponse(f"/app/wnioski/{id_delegacji}/przejazd?wynik={WYNIK_ODRZUCENIE}", status_code=303)
+ 
+ 
++# ---------------------------------------------------------------- przejazd alternatywny (S22IT1S0P2-136)
++
++
++def dane_alternatyw(s: Session, d: Delegacja) -> dict:
++    odwolane = odwolane_przejazdy(s, d)
++    propozycje = przejazdy_alternatywne(s, d)
++    id_polaczen = {p.id_polaczenia for p in odwolane + propozycje if p.id_polaczenia}
++    polaczenia = {
++        x.id_polaczenia: x for x in s.scalars(select(Polaczenie).where(Polaczenie.id_polaczenia.in_(id_polaczen)))
++    }
++    return dict(
++        d=d,
++        odwolane=odwolane,
++        propozycje=propozycje,
++        polaczenia=polaczenia,
++        budzet=dostepny_budzet(s, d),
++        mozna_wybrac=bool(propozycje),
++    )
++
++
++@router.get("/wnioski/{id_delegacji}/przejazd-alternatywny", response_class=HTMLResponse)
++def przejazd_alternatywny(
++    id_delegacji: str,
++    request: Request,
++    wynik: str | None = None,
++    s: Session = Depends(get_sesja),
++    uzytkownik: Zolnierz = Depends(biezacy_uzytkownik),
++):
++    """S22IT1S0P2-136: informacja o odwołaniu przejazdu i wybór przejazdu zastępczego."""
++    d = delegacja_do_organizacji(s, id_delegacji, uzytkownik)
++    return strona(
++        request, s, "przejazd_alternatywny.html", uzytkownik, **dane_alternatyw(s, d), komunikat=KOMUNIKATY.get(wynik)
++    )
++
++
++async def _przekaz_wybor_alternatywy(
++    request: Request, s: Session, broker: Broker, d: Delegacja, uzytkownik: Zolnierz, wybor_dane: dict, wynik: str
++):
++    kontekst = dane_alternatyw(s, d)
++    try:
++        wybor = WyborAlternatywyIn(**wybor_dane)
++        await przyjmij_wybor_alternatywy(s, broker, d.id_delegacji, uzytkownik, wybor)
++    except (ValidationError, HTTPException) as e:
++        if isinstance(e, HTTPException) and e.status_code != 409:
++            raise
++        komunikat = (
++            str(e.detail) if isinstance(e, HTTPException) else e.errors()[0]["msg"].removeprefix("Value error, ")
++        )
++        return strona(
++            request,
++            s,
++            "przejazd_alternatywny.html",
++            uzytkownik,
++            **kontekst,
++            komunikat=komunikat,
++            blad=True,
++            zaznaczony=wybor_dane.get("id_przejazdu"),
++            uzasadnienie=wybor_dane.get("uzasadnienie", ""),
++        )
++    return RedirectResponse(f"/app/wnioski/{d.id_delegacji}/przejazd-alternatywny?wynik={wynik}", status_code=303)
++
++
++@router.post("/wnioski/{id_delegacji}/przejazd-alternatywny", response_class=HTMLResponse)
++async def wybierz_przejazd_alternatywny(
++    id_delegacji: str,
++    request: Request,
++    id_przejazdu: str = Form(""),
++    uzasadnienie: str = Form(""),
++    s: Session = Depends(get_sesja),
++    broker: Broker = Depends(get_broker),
++    uzytkownik: Zolnierz = Depends(biezacy_uzytkownik),
++):
++    """Kroki 3–4: delegowany wybiera zamiennik; resztę (anulowanie, rezerwacja, dokumentacja) robi agent."""
++    d = delegacja_do_organizacji(s, id_delegacji, uzytkownik)
++    formularz = await request.form()
++    sprawdz_csrf(request, request.headers.get("X-CSRF-Token") or formularz.get("csrf"))
++    dane = {"id_przejazdu": _na_liczbe(id_przejazdu), "uzasadnienie": uzasadnienie.strip()}
++    return await _przekaz_wybor_alternatywy(request, s, broker, d, uzytkownik, dane, WYNIK_ZMIANA)
++
++
++@router.post("/wnioski/{id_delegacji}/przejazd-alternatywny/odrzucenie", response_class=HTMLResponse)
++async def odrzuc_przejazdy_alternatywne(
++    id_delegacji: str,
++    request: Request,
++    przyczyna: str = Form(""),
++    s: Session = Depends(get_sesja),
++    broker: Broker = Depends(get_broker),
++    uzytkownik: Zolnierz = Depends(biezacy_uzytkownik),
++):
++    """Scenariusz 3a–4a: żaden zamiennik nie odpowiada – sprawę przejmuje osoba odpowiedzialna."""
++    d = delegacja_do_organizacji(s, id_delegacji, uzytkownik)
++    formularz = await request.form()
++    sprawdz_csrf(request, request.headers.get("X-CSRF-Token") or formularz.get("csrf"))
++    dane = {"odrzuc_wszystkie": True, "uzasadnienie": przyczyna.strip()}
++    return await _przekaz_wybor_alternatywy(request, s, broker, d, uzytkownik, dane, WYNIK_ODRZUCENIE_ALTERNATYW)
++
++
+ # ---------------------------------------------------------------- zakwaterowanie (S22IT1S0P2-99)
+ 
+ 
+diff --git a/tests/test_zmiana_przejazdu.py b/tests/test_zmiana_przejazdu.py
+new file mode 100644
+index 0000000..e9ac70b
+--- /dev/null
++++ b/tests/test_zmiana_przejazdu.py
+@@ -0,0 +1,347 @@
++"""S22IT1S0P2-17: zmiana przejazdu po jego odwołaniu przez przewoźnika (podzadania 134–138).
++
++Scenariusz: przewoźnik odwołuje zarezerwowany przejazd → system informuje delegowanego i przedstawia przejazdy
++alternatywne z terminowym dojazdem w budżecie jednostki → delegowany wybiera jeden z nich → system anuluje starą
++rezerwację, rezerwuje nowy przejazd, aktualizuje dokumentację (i nocleg przy zmianie dnia przybycia) i potwierdza
++zmiany. Alternatywnie (3a–4a): delegowany odrzuca wszystkie propozycje i sprawę przejmuje osoba odpowiedzialna.
++"""
++
++import asyncio
++from datetime import time, timedelta
++from decimal import Decimal
++
++import pytest
++from conftest import AtrapaBrokera
++from fastapi.testclient import TestClient
++from pomoc_sesji import zaloguj_z_csrf
++from sqlalchemy import select
++
++from kwatermistrz.agents import AGENCI
++from kwatermistrz.api.main import app, get_broker
++from kwatermistrz.db import sesja, teraz
++from kwatermistrz.messaging import Komunikat, Typ
++from kwatermistrz.models import (
++    Delegacja,
++    Jednostka,
++    LogOperacji,
++    PolecenieWyjazdu,
++    Przedsiewziecie,
++    Przejazd,
++    Status,
++    StatusRezerwacji,
++    Zakwaterowanie,
++)
++
++DEL = "DEL-ODW-1"
++DELEGOWANY, ORGANIZATOR = "ZOL-003", "ZOL-001"
++WYJAZD = teraz().date() + timedelta(days=10)
++POWROT = WYJAZD + timedelta(days=4)
++
++
++class BrokerZHistoria(AtrapaBrokera):
++    """Atrapa brokera, która pamięta wszystkie komunikaty – także te zużyte już przy dostarczaniu."""
++
++    def __init__(self) -> None:
++        super().__init__()
++        self.historia: list[Komunikat] = []
++
++    async def publikuj(self, k: Komunikat) -> None:
++        self.historia.append(k)
++        await super().publikuj(k)
++
++    def powiadomienia(self, do: str) -> list[str]:
++        return [k.dane["tresc"] for k in self.historia if k.typ == Typ.POWIADOMIENIE and k.dane.get("do") == do]
++
++
++@pytest.fixture
++def broker() -> BrokerZHistoria:
++    return BrokerZHistoria()
++
++
++@pytest.fixture
++def klient(broker):
++    app.dependency_overrides[get_broker] = lambda: broker
++    with TestClient(app, follow_redirects=False) as c:
++        yield c
++    app.dependency_overrides.clear()
++
++
++def utworz(status: str = Status.ZORGANIZOWANY, godzina_rozpoczecia: time | None = None) -> dict[str, int]:
++    """Zorganizowana delegacja do Torunia: przejazd tam (POL-01) i z powrotem, nocleg i polecenie wyjazdu."""
++    with sesja() as s:
++        if godzina_rozpoczecia:
++            s.add(
++                Przedsiewziecie(
++                    id_przedsiewziecia="PRZ-T17",
++                    nazwa="Szkolenie testowe",
++                    miejscowosc="Toruń",
++                    data_rozpoczecia=WYJAZD,
++                    data_zakonczenia=POWROT,
++                    godzina_rozpoczecia=godzina_rozpoczecia,
++                )
++            )
++        s.add(
++            Delegacja(
++                id_delegacji=DEL,
++                id_zolnierza=DELEGOWANY,
++                id_przedsiewziecia="PRZ-T17" if godzina_rozpoczecia else None,
++                cel_wyjazdu="Szkolenie z logistyki wojskowej",
++                miejsce_docelowe="Toruń",
++                data_wyjazdu=WYJAZD,
++                data_powrotu=POWROT,
++                srodek_transportu="kolej",
++                potrzeba_zakwaterowania=True,
++                status=status,
++                id_zatwierdzajacego=ORGANIZATOR,
++                decyzja="Zgoda",
++            )
++        )
++        s.flush()
++        tam = Przejazd(
++            id_delegacji=DEL,
++            kierunek="Tam",
++            srodek_transportu="kolej",
++            data_przejazdu=WYJAZD,
++            id_polaczenia="POL-01",
++            koszt=Decimal("89.00"),
++            status=StatusRezerwacji.WYBRANA,
++        )
++        powrot = Przejazd(
++            id_delegacji=DEL,
++            kierunek="Powrót",
++            srodek_transportu="kolej",
++            data_przejazdu=POWROT,
++            id_polaczenia="POL-01-P",
++            koszt=Decimal("89.00"),
++            status=StatusRezerwacji.WYBRANA,
++        )
++        s.add_all([tam, powrot])
++        s.add(
++            Zakwaterowanie(
++                id_delegacji=DEL,
++                id_obiektu="OBJ-03",
++                data_od=WYJAZD,
++                data_do=POWROT,
++                cena_za_dobe=Decimal("260.00"),
++                koszt_calkowity=Decimal("1040.00"),
++                status=StatusRezerwacji.WYBRANA,
++                czas_dojazdu_min=15,
++            )
++        )
++        s.add(
++            PolecenieWyjazdu(
++                numer="PW/2099/0017",
++                id_delegacji=DEL,
++                wersja_wzoru="test",
++                tresc={"termin": {"od": WYJAZD.isoformat(), "do": POWROT.isoformat()}},
++            )
++        )
++        s.get(Jednostka, "JW-1001").budzet_wykorzystany = Decimal("1000.00")
++        s.flush()
++        return {"tam": tam.id_przejazdu, "powrot": powrot.id_przejazdu}
++
++
++def dostarcz(broker, k: Komunikat | None = None) -> None:
++    if k is not None:
++        asyncio.run(broker.publikuj(k))
++    asyncio.run(broker.dostarczaj([klasa(broker) for klasa in AGENCI.values()]))
++
++
++def odwolaj(broker, id_przejazdu: int, przyczyna: str = "Awaria taboru") -> None:
++    dane = {"id_przejazdu": id_przejazdu, "przyczyna": przyczyna}
++    dostarcz(broker, Komunikat(typ=Typ.ODWOLANIE_PRZEJAZDU, id_delegacji=DEL, dane=dane))
++
++
++def przejazdy(status: str | None = None) -> list[Przejazd]:
++    with sesja() as s:
++        zapytanie = select(Przejazd).where(Przejazd.id_delegacji == DEL).order_by(Przejazd.id_przejazdu)
++        return [r for r in s.scalars(zapytanie) if status is None or r.status == status]
++
++
++def delegacja() -> Delegacja:
++    with sesja() as s:
++        return s.get(Delegacja, DEL)
++
++
++# ---------------------------------------------------------------- podzadanie 134: odwołanie i propozycje
++
++
++def test_odwolanie_przez_api_daje_propozycje_alternatywne_i_powiadomienie(klient, broker):
++    ids = utworz()
++
++    odp = klient.post(
++        f"/delegacje/{DEL}/przejazdy/{ids['tam']}/odwolanie",
++        json={"przyczyna": "Awaria taboru", "przewoznik": "PKP Intercity"},
++    )
++    assert odp.status_code == 202
++    dostarcz(broker)
++
++    odwolany = przejazdy(StatusRezerwacji.ODWOLANA)
++    assert [r.id_przejazdu for r in odwolany] == [ids["tam"]]
++    assert "PKP Intercity: Awaria taboru" in odwolany[0].powod_zmiany
++    alternatywy = przejazdy(StatusRezerwacji.ALTERNATYWA)
++    assert {r.id_polaczenia for r in alternatywy} == {"POL-02", "POL-03", "POL-04", "POL-05"}
++    assert all(r.kierunek == "Tam" and r.data_przejazdu == WYJAZD for r in alternatywy)
++    assert [r.id_polaczenia for r in alternatywy if r.rekomendowany] == ["POL-03"]  # najtańszy terminowy
++    assert delegacja().status == Status.ZATWIERDZONY  # organizacja znów niekompletna
++    assert any("odwołał przejazd" in t for t in broker.powiadomienia(DELEGOWANY))
++
++
++def test_propozycje_zapewniaja_przybycie_przed_rozpoczeciem_zadania(broker):
++    ids = utworz(godzina_rozpoczecia=time(18, 35))
++
++    odwolaj(broker, ids["tam"])
++
++    # POL-02 (19:05) i POL-03 (18:40) dojeżdżają po rozpoczęciu o 18:35 – nie są proponowane
++    assert {r.id_polaczenia for r in przejazdy(StatusRezerwacji.ALTERNATYWA)} == {"POL-04", "POL-05"}
++
++
++def test_gdy_nikt_nie_zdazy_w_dniu_wyjazdu_propozycje_sa_dzien_wczesniej(broker):
++    ids = utworz(godzina_rozpoczecia=time(12, 0))
++
++    odwolaj(broker, ids["tam"])
++
++    alternatywy = przejazdy(StatusRezerwacji.ALTERNATYWA)
++    assert alternatywy and all(r.data_przejazdu == WYJAZD - timedelta(days=1) for r in alternatywy)
++    assert all("dzień wcześniej" in r.uzasadnienie for r in alternatywy)
++
++
++def test_brak_zamiennika_w_budzecie_przekazuje_sprawe_organizatorowi(broker):
++    ids = utworz()
++    with sesja() as s:
++        j = s.get(Jednostka, "JW-1001")
++        j.budzet_delegacji, j.budzet_wykorzystany = Decimal("0"), Decimal("1000.00")
++
++    odwolaj(broker, ids["tam"])
++
++    assert przejazdy(StatusRezerwacji.ALTERNATYWA) == []
++    assert any("zorganizuj przejazd indywidualnie" in t for t in broker.powiadomienia(ORGANIZATOR))
++    assert any("przekazano osobie odpowiedzialnej" in t for t in broker.powiadomienia(DELEGOWANY))
++
++
++def test_ponowne_odwolanie_nie_dubluje_propozycji(broker):
++    ids = utworz()
++
++    odwolaj(broker, ids["tam"])
++    odwolaj(broker, ids["tam"])
++
++    assert len(przejazdy(StatusRezerwacji.ALTERNATYWA)) == 4
++
++
++def test_api_nie_przyjmuje_odwolania_po_rozpoczeciu_podrozy(klient):
++    ids = utworz(status=Status.W_TRAKCIE)
++
++    odp = klient.post(f"/delegacje/{DEL}/przejazdy/{ids['tam']}/odwolanie", json={"przyczyna": "Awaria taboru"})
++    assert odp.status_code == 409
++
++
++# ---------------------------------------------------------------- podzadanie 135: anulowanie i nowa rezerwacja
++
++
++def test_wybor_zamiennika_anuluje_stara_rezerwacje_i_aktualizuje_dokumentacje(klient, broker):
++    ids = utworz()
++    odwolaj(broker, ids["tam"])
++    pol_02 = next(r for r in przejazdy(StatusRezerwacji.ALTERNATYWA) if r.id_polaczenia == "POL-02")
++
++    zaloguj_z_csrf(klient, DELEGOWANY)
++    odp = klient.post(f"/app/wnioski/{DEL}/przejazd-alternatywny", data={"id_przejazdu": str(pol_02.id_przejazdu)})
++    assert odp.status_code == 303
++    dostarcz(broker)
++
++    statusy = {r.id_przejazdu: r.status for r in przejazdy()}
++    assert statusy[ids["tam"]] == StatusRezerwacji.ANULOWANA
++    assert statusy[pol_02.id_przejazdu] == StatusRezerwacji.WYBRANA
++    assert statusy[ids["powrot"]] == StatusRezerwacji.WYBRANA
++    assert list(statusy.values()).count(StatusRezerwacji.ANULOWANA) == 4  # stara rezerwacja + 3 niewybrane
++    assert delegacja().status == Status.ZORGANIZOWANY  # Koordynator po wyniku transportu
++    with sesja() as s:
++        assert s.get(Jednostka, "JW-1001").budzet_wykorzystany == Decimal("966.00")  # 55 zł zamiast 89 zł
++        polecenie = s.scalar(select(PolecenieWyjazdu).where(PolecenieWyjazdu.id_delegacji == DEL))
++        assert "PKP Intercity (TLK)" in polecenie.tresc["zmiany_przejazdu"][0]["nowy"]
++    assert any("Potwierdzenie zmiany przejazdu" in t for t in broker.powiadomienia(DELEGOWANY))
++
++
++def test_wczesniejszy_dojazd_przesuwa_nocleg_i_date_wyjazdu(broker):
++    ids = utworz(godzina_rozpoczecia=time(12, 0))
++    odwolaj(broker, ids["tam"])
++    rekomendowany = next(r for r in przejazdy(StatusRezerwacji.ALTERNATYWA) if r.rekomendowany)
++
++    dane = {"id_przejazdu": rekomendowany.id_przejazdu, "id_osoby": DELEGOWANY}
++    dostarcz(broker, Komunikat(typ=Typ.WYBOR_PRZEJAZDU_ALTERNATYWNEGO, id_delegacji=DEL, dane=dane))
++
++    dzien_wczesniej = WYJAZD - timedelta(days=1)
++    assert delegacja().data_wyjazdu == dzien_wczesniej
++    with sesja() as s:
++        nocleg = s.scalar(select(Zakwaterowanie).where(Zakwaterowanie.id_delegacji == DEL))
++        assert nocleg.data_od == dzien_wczesniej and nocleg.koszt_calkowity == Decimal("1300.00")  # 5 dób
++        polecenie = s.scalar(select(PolecenieWyjazdu).where(PolecenieWyjazdu.id_delegacji == DEL))
++        assert polecenie.tresc["termin"]["od"] == dzien_wczesniej.isoformat()
++
++
++def test_zamiennik_wybiera_tylko_delegowany(klient, broker):
++    ids = utworz()
++    odwolaj(broker, ids["tam"])
++    propozycja = przejazdy(StatusRezerwacji.ALTERNATYWA)[0]
++
++    zaloguj_z_csrf(klient, ORGANIZATOR)
++    odp = klient.post(
++        f"/delegacje/{DEL}/wybor-przejazdu-alternatywnego", json={"id_przejazdu": propozycja.id_przejazdu}
++    )
++    assert odp.status_code == 403
++    assert len(przejazdy(StatusRezerwacji.ALTERNATYWA)) == 4
++
++
++# ---------------------------------------------------------------- podzadanie 137: odrzucenie wszystkich (3a–4a)
++
++
++def test_odrzucenie_wszystkich_przekazuje_sprawe_osobie_odpowiedzialnej(klient, broker):
++    ids = utworz()
++    odwolaj(broker, ids["tam"])
++    zaloguj_z_csrf(klient, DELEGOWANY)
++
++    bez_przyczyny = klient.post(f"/app/wnioski/{DEL}/przejazd-alternatywny/odrzucenie", data={"przyczyna": " "})
++    assert bez_przyczyny.status_code == 200 and "Podaj przyczynę" in bez_przyczyny.text
++
++    odp = klient.post(
++        f"/app/wnioski/{DEL}/przejazd-alternatywny/odrzucenie", data={"przyczyna": "Żaden nie pasuje do służby"}
++    )
++    assert odp.status_code == 303
++    dostarcz(broker)
++
++    assert przejazdy(StatusRezerwacji.ALTERNATYWA) == []
++    assert len(przejazdy(StatusRezerwacji.DO_UZGODNIENIA)) == 4
++    assert any("zorganizuj przejazd indywidualnie" in t for t in broker.powiadomienia(ORGANIZATOR))
++    assert any("przekazano osobie odpowiedzialnej" in t for t in broker.powiadomienia(DELEGOWANY))
++    with sesja() as s:
++        wyniki = s.scalars(
++            select(LogOperacji.wynik).where(
++                LogOperacji.id_delegacji == DEL, LogOperacji.operacja == "Zmiana przejazdu po odwołaniu"
++            )
++        ).all()
++    assert wyniki == ["Ostrzeżenie"]
++
++
++# ---------------------------------------------------------------- podzadanie 136: ekran
++
++
++def test_ekran_pokazuje_odwolanie_i_propozycje_z_rekomendacja(klient, broker):
++    ids = utworz()
++    odwolaj(broker, ids["tam"])
++    zaloguj_z_csrf(klient, DELEGOWANY)
++
++    strona = klient.get(f"/app/wnioski/{DEL}/przejazd-alternatywny").text
++    assert "Przewoźnik odwołał przejazd tam" in strona and "Awaria taboru" in strona
++    assert strona.count('name="id_przejazdu"') == 4 and "rekomendowany" in strona
++    assert "Żaden przejazd mi nie odpowiada" in strona
++
++    wniosek = klient.get(f"/app/wnioski/{DEL}").text
++    assert f"/app/wnioski/{DEL}/przejazd-alternatywny" in wniosek
++    assert "Oczekiwanie na wybór przejazdu alternatywnego" in wniosek
++
++
++def test_ekran_bez_odwolania_informuje_ze_nic_nie_odwolano(klient):
++    utworz()
++    zaloguj_z_csrf(klient, DELEGOWANY)
++
++    strona = klient.get(f"/app/wnioski/{DEL}/przejazd-alternatywny").text
++    assert "Żaden przejazd tej delegacji nie został odwołany" in strona
