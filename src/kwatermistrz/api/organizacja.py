@@ -13,6 +13,9 @@ Zrobione:
   zarezerwowanego przejazdu → `Typ.ODWOLANIE_PRZEJAZDU`; `GET /delegacje/{id}/przejazdy-alternatywne` – propozycje
   zastępcze; `POST /delegacje/{id}/wybor-przejazdu-alternatywnego` – wybór albo odrzucenie wszystkich
   → `Typ.WYBOR_PRZEJAZDU_ALTERNATYWNEGO`.
+- S22IT1S0P2-40: `POST /delegacje/{id}/wybor-obiektu` – wybór obiektu z katalogu z kontrolą limitu noclegowego
+  → `Typ.WYBOR_OBIEKTU`; `POST /delegacje/{id}/decyzja-odstepstwa` – przełożony zgadza się na odstępstwo od limitu
+  albo odmawia → `Typ.DECYZJA_ODSTEPSTWA`.
 """
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -20,6 +23,7 @@ from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..agents.limit_noclegu import katalog_obiektow, propozycje_w_limicie, przelozony, wniosek_o_odstepstwo
 from ..agents.zmiana_przejazdu import ETAPY_PRZED_PODROZA, przejazdy_alternatywne
 from ..db import teraz
 from ..messaging import Broker, Komunikat, Typ
@@ -316,7 +320,9 @@ async def wybierz_zakwaterowanie(
             Zakwaterowanie.status.in_([StatusRezerwacji.WYBRANA, StatusRezerwacji.DO_DECYZJI_PRZELOZONEGO]),
         )
     )
-    if juz_wybrane is not None or z.status != StatusRezerwacji.PROPOZYCJA:
+    # S22IT1S0P2-40 (2a): wniosek o odstępstwo dla wstrzymanego obiektu, gdy nie ma obiektów w limicie
+    wniosek_dla_wstrzymanego = z.status == StatusRezerwacji.WSTRZYMANA and not propozycje_w_limicie(s, d)
+    if juz_wybrane is not None or (z.status != StatusRezerwacji.PROPOZYCJA and not wniosek_dla_wstrzymanego):
         raise HTTPException(409, "Zakwaterowanie zostało już wybrane")
     uzasadnienie = (wybor.uzasadnienie or "").strip()
     if z.wymaga_odstepstwa and not uzasadnienie:
@@ -325,3 +331,84 @@ async def wybierz_zakwaterowanie(
     dane = {"id_zakwaterowania": z.id_zakwaterowania, "uzasadnienie": uzasadnienie or None}
     await broker.publikuj(Komunikat(typ=Typ.WYBOR_ZAKWATEROWANIA, id_delegacji=id_delegacji, dane=dane))
     return {"przyjeto": True}
+
+
+# ---------------------------------------------------------------- S22IT1S0P2-40: limit noclegowy i odstępstwo
+
+
+class WyborObiektuIn(BaseModel):
+    id_obiektu: str = Field(min_length=1, max_length=20)
+
+
+async def przyjmij_wybor_obiektu(s: Session, broker: Broker, id_delegacji: str, u: Zolnierz, id_obiektu: str) -> dict:
+    d = dostep_do_podrozy(s, id_delegacji, u)
+    if u.id_zolnierza != d.id_zolnierza:
+        raise HTTPException(403, "Obiekt zakwaterowania wybiera delegowany")
+    if d.status != Status.ZATWIERDZONY:
+        raise HTTPException(409, "Zakwaterowanie wybiera się po zatwierdzeniu wniosku")
+    if all(o.id_obiektu != id_obiektu for o in katalog_obiektow(s, d)):
+        raise HTTPException(409, "Wybierz obiekt z katalogu w miejscowości zadania")
+    await broker.publikuj(
+        Komunikat(
+            typ=Typ.WYBOR_OBIEKTU,
+            id_delegacji=id_delegacji,
+            dane={"id_obiektu": id_obiektu, "id_osoby": u.id_zolnierza},
+        )
+    )
+    return {"przyjeto": True, "komunikat": "Wybór przekazany – system sprawdzi limit noclegowy i budżet jednostki"}
+
+
+@router.post("/delegacje/{id_delegacji}/wybor-obiektu", status_code=202)
+async def wybor_obiektu(
+    id_delegacji: str,
+    wybor: WyborObiektuIn,
+    request: Request,
+    s: Session = Depends(get_sesja),
+    broker: Broker = Depends(get_broker),
+    uzytkownik: Zolnierz = Depends(uzytkownik_sesji),
+):
+    """Delegowany wybiera obiekt spoza propozycji; obiekt ponad limitem – rezerwacja zostanie wstrzymana."""
+    sprawdz_csrf(request, request.headers.get("X-CSRF-Token"))
+    return await przyjmij_wybor_obiektu(s, broker, id_delegacji, uzytkownik, wybor.id_obiektu)
+
+
+class DecyzjaOdstepstwaIn(BaseModel):
+    zgoda: bool
+    uzasadnienie: str = Field("", max_length=500)
+
+    @model_validator(mode="after")
+    def sprawdz(self):
+        if not self.zgoda and not self.uzasadnienie.strip():
+            raise ValueError("Podaj przyczynę odmowy odstępstwa")
+        return self
+
+
+async def przyjmij_decyzje_odstepstwa(
+    s: Session, broker: Broker, id_delegacji: str, u: Zolnierz, decyzja: DecyzjaOdstepstwaIn
+) -> dict:
+    d = pobierz_delegacje(s, id_delegacji)
+    if u.id_zolnierza != przelozony(s, d):
+        raise HTTPException(403, "O odstępstwie od limitu decyduje przełożony delegowanego")
+    if wniosek_o_odstepstwo(s, d) is None:
+        raise HTTPException(409, "Brak wniosku o odstępstwo oczekującego na decyzję")
+    await broker.publikuj(
+        Komunikat(
+            typ=Typ.DECYZJA_ODSTEPSTWA,
+            id_delegacji=id_delegacji,
+            dane={"zgoda": decyzja.zgoda, "uzasadnienie": decyzja.uzasadnienie.strip(), "id_osoby": u.id_zolnierza},
+        )
+    )
+    return {"przyjeto": True, "komunikat": "Decyzja przekazana do Agenta Zakwaterowania"}
+
+
+@router.post("/delegacje/{id_delegacji}/decyzja-odstepstwa", status_code=202)
+async def decyzja_odstepstwa(
+    id_delegacji: str,
+    decyzja: DecyzjaOdstepstwaIn,
+    request: Request,
+    s: Session = Depends(get_sesja),
+    broker: Broker = Depends(get_broker),
+    uzytkownik: Zolnierz = Depends(uzytkownik_sesji),
+):
+    sprawdz_csrf(request, request.headers.get("X-CSRF-Token"))
+    return await przyjmij_decyzje_odstepstwa(s, broker, id_delegacji, uzytkownik, decyzja)

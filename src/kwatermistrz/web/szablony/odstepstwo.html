@@ -1,0 +1,47 @@
+{% extends "baza.html" %}
+{% block tytul %}Odstępstwo od limitu – {{ d.id_delegacji }}{% endblock %}
+{% block tresc %}
+<p><a href="/app/wnioski/{{ d.id_delegacji }}">← Wniosek {{ d.id_delegacji }}</a></p>
+
+<div class="naglowek-strony">
+  <h2>Wniosek o odstępstwo od limitu noclegowego</h2>
+  <span class="status duzy {{ d.status | klasa_statusu }}">{{ d.status }}</span>
+</div>
+
+{% if komunikat %}
+<p class="{{ 'bledy' if blad else 'komunikat' }}" role="{{ 'alert' if blad else 'status' }}">{{ komunikat }}</p>
+{% endif %}
+
+{# S22IT1S0P2-40 (podzadanie 155): decyzja przełożonego – zgoda rezerwuje pierwotnie wybrany obiekt #}
+{% if z %}
+<dl class="podsumowanie">
+  <dt>Obiekt</dt><dd>{{ obiekt.nazwa if obiekt else z.id_obiektu }}{% if obiekt %} ({{ obiekt.rodzaj }}, {{ obiekt.miejscowosc }}){% endif %}</dd>
+  <dt>Pobyt</dt><dd>{{ z.data_od.strftime('%d.%m.%Y') }} – {{ z.data_do.strftime('%d.%m.%Y') }}</dd>
+  <dt>Cena za dobę</dt><dd>{{ z.cena_za_dobe | kwota }} (limit {{ limit | kwota }})</dd>
+  <dt>Koszt pobytu</dt><dd>{{ z.koszt_calkowity | kwota }}, ponad limit {{ nadwyzka | kwota }}</dd>
+  {% if budzet is not none %}<dt>Dostępny budżet jednostki</dt><dd>{{ budzet | kwota }}</dd>{% endif %}
+  <dt>Uzasadnienie delegowanego</dt><dd>{{ z.uzasadnienie }}</dd>
+</dl>
+<form method="post" action="/app/wnioski/{{ d.id_delegacji }}/odstepstwo">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <input type="hidden" name="zgoda" value="tak">
+  <label for="uwagi_zgody">Uwagi <small>(opcjonalnie)</small>
+    <textarea id="uwagi_zgody" name="uzasadnienie" rows="2" maxlength="500"></textarea>
+  </label>
+  <button type="submit">Zgadzam się na odstępstwo</button>
+</form>
+<details>
+  <summary>Odmowa odstępstwa</summary>
+  <form method="post" action="/app/wnioski/{{ d.id_delegacji }}/odstepstwo">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <input type="hidden" name="zgoda" value="nie">
+    <label for="uwagi_odmowy">Przyczyna odmowy *
+      <textarea id="uwagi_odmowy" name="uzasadnienie" rows="2" maxlength="500" required>{{ uwagi or '' }}</textarea>
+    </label>
+    <button type="submit" class="secondary">Odmów</button>
+  </form>
+</details>
+{% else %}
+<p>Brak wniosku o odstępstwo oczekującego na decyzję.</p>
+{% endif %}
+{% endblock %}
