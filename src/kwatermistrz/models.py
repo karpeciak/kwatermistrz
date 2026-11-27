@@ -55,6 +55,15 @@ class StatusZmianyTerminu:
     ZASTAPIONA = "zastąpiona"  # kolejna zmiana terminu przed potwierdzeniem
 
 
+class StatusZlecenia:
+    """Stan zlecenia agentowi, którego realizacja przekroczyła dopuszczalny czas (S22IT1S0P2-42)."""
+
+    OPOZNIONE = "opóźnione"  # przekroczony czas, zlecenie ponowione – czeka na decyzję delegowanego
+    OCZEKIWANIE = "oczekiwanie potwierdzone"  # delegowany czeka na realizację
+    ZREALIZOWANE = "zrealizowane"  # agent odpowiedział po przywróceniu działania
+    WYCOFANE = "wycofane"  # rezygnacja albo wyczerpane ponowienia – incydent, sprawa u osoby odpowiedzialnej
+
+
 class StatusRozliczenia:
     W_PRZYGOTOWANIU = "w przygotowaniu"
     GOTOWE_DO_WERYFIKACJI = "gotowe do weryfikacji"  # S22IT1S0P2-36
@@ -216,6 +225,22 @@ class ZmianaTerminu(Base):
     status: Mapped[str] = mapped_column(String(30))
     data_decyzji: Mapped[datetime | None] = mapped_column(DateTime)
     uzasadnienie: Mapped[str | None] = mapped_column(Text)
+
+
+class ZlecenieAgenta(Base):
+    """Zlecenie agentowi, które przekroczyło dopuszczalny czas realizacji (S22IT1S0P2-42): ponowienia i incydent."""
+
+    __tablename__ = "zlecenie_agenta"
+
+    id_zlecenia: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    id_delegacji: Mapped[str] = mapped_column(ForeignKey("delegacja.id_delegacji"), index=True)
+    rodzaj: Mapped[str] = mapped_column(String(30))  # np. „przygotowanie transportu”
+    data_zlecenia: Mapped[datetime] = mapped_column(DateTime)
+    liczba_ponowien: Mapped[int] = mapped_column(Integer, default=0)
+    przewidywany_termin: Mapped[datetime] = mapped_column(DateTime)
+    status: Mapped[str] = mapped_column(String(30))
+    data_zakonczenia: Mapped[datetime | None] = mapped_column(DateTime)
+    incydent: Mapped[str | None] = mapped_column(Text)
 
 
 class PolecenieWyjazdu(Base):
