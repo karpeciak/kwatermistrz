@@ -1,0 +1,79 @@
+{% extends "baza.html" %}
+{% block tytul %}Nowy plan – {{ d.id_delegacji }}{% endblock %}
+{% block tresc %}
+<p><a href="/app/wnioski/{{ d.id_delegacji }}">← Wniosek {{ d.id_delegacji }}</a></p>
+
+<div class="naglowek-strony">
+  <h2>Zmiana terminu zadania</h2>
+  <span class="status duzy {{ d.status | klasa_statusu }}">{{ d.status }}</span>
+</div>
+
+{% if komunikat %}
+<p class="{{ 'bledy' if blad else 'komunikat' }}" role="{{ 'alert' if blad else 'status' }}">{{ komunikat }}</p>
+{% endif %}
+
+{# S22IT1S0P2-41 (podzadanie 159): porównanie dotychczasowego i nowego planu, potwierdzenie albo brak udziału #}
+<article class="komunikat ostrzezenie" role="status">
+  <p><strong>Organizator zmienił termin zadania.</strong>
+    {% if plan.powod %}Powód: {{ plan.powod }}.{% endif %}
+    Zgłoszono {{ plan.data_zgloszenia.strftime('%d.%m.%Y %H:%M') }}.</p>
+</article>
+
+{% set stary = plan.dotychczasowy %}
+{% set nowy = plan.nowy or {} %}
+<div class="overflow-auto">
+  <table>
+    <thead>
+      <tr><th scope="col"></th><th scope="col">Dotychczasowy plan</th><th scope="col">Nowy plan</th></tr>
+    </thead>
+    <tbody>
+      {% for klucz, nazwa in [("termin", "Termin wyjazdu"), ("tam", "Przejazd tam"), ("powrot", "Przejazd powrotny"), ("nocleg", "Nocleg")] %}
+      <tr>
+        <th scope="row">{{ nazwa }}</th>
+        <td>{{ stary.get(klucz) or "–" }}</td>
+        <td>{{ nowy.get(klucz) or "–" }}</td>
+      </tr>
+      {% endfor %}
+      <tr class="razem">
+        <th scope="row">Koszt łączny</th>
+        <td class="bez-lamania">{{ stary.get("koszt") | float | kwota }}</td>
+        <td class="bez-lamania">
+          {% if nowy %}{{ nowy.get("koszt") | float | kwota }}
+            {% if plan.roznica_kosztu %}<br><small>zmiana {{ "%+.2f" | format(plan.roznica_kosztu) }} zł</small>{% endif %}
+          {% else %}–{% endif %}
+        </td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+{% if plan.status == "oczekuje na potwierdzenie" %}
+<p>Nowy plan mieści się w limitach i budżecie jednostki i zapewnia dojazd przed rozpoczęciem zajęć.
+  Po potwierdzeniu system anuluje nieaktualne rezerwacje, zarezerwuje nowe i zaktualizuje polecenie wyjazdu.</p>
+<form method="post" action="/app/wnioski/{{ d.id_delegacji }}/nowy-plan">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <input type="hidden" name="potwierdz" value="tak">
+  <button type="submit">Potwierdzam nowy plan</button>
+</form>
+<details>
+  <summary>Nie mogę wziąć udziału w zadaniu w nowym terminie</summary>
+  <form method="post" action="/app/wnioski/{{ d.id_delegacji }}/nowy-plan">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <input type="hidden" name="potwierdz" value="nie">
+    <label for="uzasadnienie">Przyczyna *
+      <textarea id="uzasadnienie" name="uzasadnienie" rows="3" maxlength="500" required>{{ uzasadnienie or '' }}</textarea>
+    </label>
+    <small>Realizacja delegacji zostanie wstrzymana, a sprawę przejmie przełożony.</small>
+    <button type="submit" class="secondary">Zgłoś brak możliwości udziału</button>
+  </form>
+</details>
+{% elif plan.status == "potwierdzona" %}
+<p class="komunikat" role="status">Nowy plan został potwierdzony i obowiązuje.</p>
+{% elif plan.status == "wstrzymana" %}
+<p class="komunikat ostrzezenie" role="status">Delegacja wstrzymana – zgłoszono brak możliwości udziału
+  ({{ plan.uzasadnienie }}). Sprawę prowadzi przełożony.</p>
+{% elif plan.status == "do uzgodnienia" %}
+<p class="komunikat ostrzezenie" role="status">Nie udało się przygotować nowego planu w limitach
+  ({{ plan.uzasadnienie }}). Wyjazd zorganizuje indywidualnie przełożony.</p>
+{% endif %}
+{% endblock %}

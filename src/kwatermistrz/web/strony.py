@@ -26,6 +26,7 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from ..agents.koordynator import DECYZJA_SYNCHRONIZACJI, KONTROLA_STATUSU, Koordynator, brakujace_elementy_organizacji
+from ..agents.zmiana_terminu import ostatnia_zmiana
 from ..api.organizacja import przyjmij_wariant, przyjmij_wybor
 from ..api.rozliczenia import (
     KOMUNIKAT_PRZYJETY,
@@ -72,6 +73,7 @@ from ..models import (
     Rozliczenie,
     Status,
     StatusRezerwacji,
+    StatusZmianyTerminu,
     Zakwaterowanie,
     Zolnierz,
 )
@@ -827,6 +829,14 @@ def rezygnacja_z_wersji_roboczej(
     return strona(request, s, "nowy_wniosek.html", uzytkownik, **kontekst)
 
 
+# S22IT1S0P2-41: na co czeka wniosek po zmianie terminu zadania
+OCZEKIWANIE_PO_ZMIANIE_TERMINU = {
+    StatusZmianyTerminu.OCZEKUJE: "Termin zadania się zmienił. Oczekiwanie na potwierdzenie nowego planu podróży.",
+    StatusZmianyTerminu.WSTRZYMANA: "Delegacja wstrzymana po zmianie terminu zadania – sprawę prowadzi przełożony.",
+    StatusZmianyTerminu.DO_UZGODNIENIA: "Po zmianie terminu zadania wyjazd organizuje indywidualnie przełożony.",
+}
+
+
 def dane_wniosku(s: Session, id_delegacji: str, uzytkownik: Zolnierz) -> dict:
     d = s.get(Delegacja, id_delegacji)
     if d is None or uzytkownik.id_zolnierza not in (d.id_zolnierza, d.id_zatwierdzajacego):
@@ -845,6 +855,7 @@ def dane_wniosku(s: Session, id_delegacji: str, uzytkownik: Zolnierz) -> dict:
         if walidacje and walidacje[-1].wybrany_wariant == "Do poprawy":
             bledy = walidacje[-1].uzasadnienie.split("; ")
     oczekiwanie = None
+    zmiana_terminu = ostatnia_zmiana(s, d)  # S22IT1S0P2-41
     wynik_transportu = any(o.id_agenta == "AG-04" for o in operacje)
     odswiezaj = d.status in ETAPY_W_TOKU and (teraz() - d.data_zmiany_statusu).total_seconds() < 60
     if d.status == Status.ZLOZONY:
@@ -853,7 +864,10 @@ def dane_wniosku(s: Session, id_delegacji: str, uzytkownik: Zolnierz) -> dict:
         oczekiwanie = "Wniosek oczekuje na decyzję przełożonego."
     elif d.status == Status.ZATWIERDZONY:
         warianty = list(s.scalars(select(Przejazd).where(Przejazd.id_delegacji == id_delegacji)))
-        if any(r.status == StatusRezerwacji.ALTERNATYWA for r in warianty):  # S22IT1S0P2-17
+        if zmiana_terminu is not None and zmiana_terminu.status in OCZEKIWANIE_PO_ZMIANIE_TERMINU:  # S22IT1S0P2-41
+            oczekiwanie = OCZEKIWANIE_PO_ZMIANIE_TERMINU[zmiana_terminu.status]
+            odswiezaj = False
+        elif any(r.status == StatusRezerwacji.ALTERNATYWA for r in warianty):  # S22IT1S0P2-17
             oczekiwanie = "Przewoźnik odwołał przejazd. Oczekiwanie na wybór przejazdu alternatywnego."
             odswiezaj = False
         elif decyzja_do_uzgodnienia(s, d) or any(r.status == StatusRezerwacji.DO_UZGODNIENIA for r in warianty):
@@ -900,6 +914,7 @@ def dane_wniosku(s: Session, id_delegacji: str, uzytkownik: Zolnierz) -> dict:
             )
         )
         is not None,
+        zmiana_terminu=zmiana_terminu,
         odstepstwo_noclegu=s.scalar(  # S22IT1S0P2-40: link do decyzji przełożonego o odstępstwie
             select(Zakwaterowanie.id_zakwaterowania).where(
                 Zakwaterowanie.id_delegacji == id_delegacji,

@@ -8,6 +8,13 @@
 <article>
   <header><strong>Organizacja wyjazdu</strong></header>
   <p>Wybierz przejazd{% if d.potrzeba_zakwaterowania %} i zakwaterowanie{% endif %} spośród propozycji przygotowanych przez system.</p>
+  {% if zmiana_terminu and zmiana_terminu.status == "oczekuje na potwierdzenie" %}
+  <p class="komunikat ostrzezenie" role="status">Organizator zmienił termin zadania – system przygotował nowy plan podróży.
+    <a href="/app/wnioski/{{ d.id_delegacji }}/nowy-plan">Porównaj plany i potwierdź</a></p>
+  {% elif zmiana_terminu and zmiana_terminu.status in ("wstrzymana", "do uzgodnienia") %}
+  <p class="komunikat ostrzezenie" role="status">Po zmianie terminu zadania sprawę delegacji prowadzi przełożony.
+    <a href="/app/wnioski/{{ d.id_delegacji }}/nowy-plan">Szczegóły zmiany</a></p>
+  {% endif %}
   {% if odwolany_przejazd %}
   <p class="komunikat ostrzezenie" role="status">Przewoźnik odwołał zarezerwowany przejazd.
     <a href="/app/wnioski/{{ d.id_delegacji }}/przejazd-alternatywny">Wybierz przejazd alternatywny</a></p>

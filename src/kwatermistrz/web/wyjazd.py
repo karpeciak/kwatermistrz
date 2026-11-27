@@ -27,8 +27,11 @@ from ..agents.limit_noclegu import (
 from ..agents.zmiana_przejazdu import dostepny_budzet, odwolane_przejazdy, przejazdy_alternatywne
 from ..api.organizacja import (
     DecyzjaOdstepstwaIn,
+    DecyzjaPlanuIn,
     WyborAlternatywyIn,
+    porownanie_planow,
     przyjmij_decyzje_odstepstwa,
+    przyjmij_decyzje_planu,
     przyjmij_wybor,
     przyjmij_wybor_alternatywy,
     przyjmij_wybor_obiektu,
@@ -58,6 +61,8 @@ WYNIK_WYBOR = "wybor-przekazany"
 WYNIK_ODRZUCENIE = "warianty-odrzucone"
 WYNIK_ZMIANA = "zmiana-przejazdu"
 WYNIK_ODRZUCENIE_ALTERNATYW = "alternatywy-odrzucone"
+WYNIK_PLAN_POTWIERDZONY = "plan-potwierdzony"
+WYNIK_BRAK_UDZIALU = "brak-udzialu"
 WYNIK_OBIEKT = "obiekt-wybrany"
 WYNIK_ODSTEPSTWO = "odstepstwo-rozpatrzone"
 KOMUNIKATY = {
@@ -67,6 +72,10 @@ KOMUNIKATY = {
     "i zaktualizuje dokumentację delegacji.",
     WYNIK_ODRZUCENIE_ALTERNATYW: "Odrzucono przejazdy alternatywne – sprawę przejmie osoba odpowiedzialna "
     "za organizację delegacji.",
+    WYNIK_PLAN_POTWIERDZONY: "Potwierdzono nowy plan – system anuluje nieaktualne rezerwacje, zarezerwuje nowe "
+    "i zaktualizuje polecenie wyjazdu.",
+    WYNIK_BRAK_UDZIALU: "Zgłoszono brak możliwości udziału – realizacja delegacji zostanie wstrzymana, "
+    "a sprawę przejmie przełożony.",
     WYNIK_OBIEKT: "Wybór przekazany – system sprawdzi limit noclegowy i budżet jednostki.",
     WYNIK_ODSTEPSTWO: "Decyzja przekazana – system zarezerwuje obiekt albo poinformuje delegowanego o odmowie.",
 }
@@ -347,6 +356,63 @@ async def odrzuc_przejazdy_alternatywne(
     sprawdz_csrf(request, request.headers.get("X-CSRF-Token") or formularz.get("csrf"))
     dane = {"odrzuc_wszystkie": True, "uzasadnienie": przyczyna.strip()}
     return await _przekaz_wybor_alternatywy(request, s, broker, d, uzytkownik, dane, WYNIK_ODRZUCENIE_ALTERNATYW)
+
+
+# ---------------------------------------------------------------- nowy plan po zmianie terminu (S22IT1S0P2-159)
+
+
+@router.get("/wnioski/{id_delegacji}/nowy-plan", response_class=HTMLResponse)
+def nowy_plan(
+    id_delegacji: str,
+    request: Request,
+    wynik: str | None = None,
+    s: Session = Depends(get_sesja),
+    uzytkownik: Zolnierz = Depends(biezacy_uzytkownik),
+):
+    """S22IT1S0P2-41: porównanie dotychczasowego i nowego planu po zmianie terminu zadania."""
+    d = delegacja_do_organizacji(s, id_delegacji, uzytkownik)
+    plan = porownanie_planow(s, d)
+    if plan is None:
+        raise HTTPException(404, "Termin zadania tej delegacji nie był zmieniany")
+    return strona(request, s, "nowy_plan.html", uzytkownik, d=d, plan=plan, komunikat=KOMUNIKATY.get(wynik))
+
+
+@router.post("/wnioski/{id_delegacji}/nowy-plan", response_class=HTMLResponse)
+async def decyzja_o_nowym_planie(
+    id_delegacji: str,
+    request: Request,
+    potwierdz: str = Form(""),
+    uzasadnienie: str = Form(""),
+    s: Session = Depends(get_sesja),
+    broker: Broker = Depends(get_broker),
+    uzytkownik: Zolnierz = Depends(biezacy_uzytkownik),
+):
+    """Krok 3 (potwierdzenie) albo 3a (brak możliwości udziału) – resztę wykonuje Agent Monitorujący."""
+    d = delegacja_do_organizacji(s, id_delegacji, uzytkownik)
+    formularz = await request.form()
+    sprawdz_csrf(request, request.headers.get("X-CSRF-Token") or formularz.get("csrf"))
+    try:
+        decyzja = DecyzjaPlanuIn(potwierdz=potwierdz == "tak", uzasadnienie=uzasadnienie)
+        await przyjmij_decyzje_planu(s, broker, d.id_delegacji, uzytkownik, decyzja)
+    except (ValidationError, HTTPException) as e:
+        if isinstance(e, HTTPException) and e.status_code != 409:
+            raise
+        komunikat = (
+            str(e.detail) if isinstance(e, HTTPException) else e.errors()[0]["msg"].removeprefix("Value error, ")
+        )
+        return strona(
+            request,
+            s,
+            "nowy_plan.html",
+            uzytkownik,
+            d=d,
+            plan=porownanie_planow(s, d),
+            komunikat=komunikat,
+            blad=True,
+            uzasadnienie=uzasadnienie,
+        )
+    wynik = WYNIK_PLAN_POTWIERDZONY if decyzja.potwierdz else WYNIK_BRAK_UDZIALU
+    return RedirectResponse(f"/app/wnioski/{d.id_delegacji}/nowy-plan?wynik={wynik}", status_code=303)
 
 
 # ---------------------------------------------------------------- zakwaterowanie (S22IT1S0P2-99)
