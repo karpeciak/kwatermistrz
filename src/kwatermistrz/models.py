@@ -39,6 +39,18 @@ class StatusRezerwacji:
     ODWOLANA = "odwołana"  # zarezerwowany przejazd odwołany przez przewoźnika
     ALTERNATYWA = "alternatywa"  # przejazd zastępczy czekający na wybór delegowanego
     ANULOWANA = "anulowana"  # rezerwacja zastąpiona innym przejazdem albo niewybrana alternatywa
+    # S22IT1S0P2-41: element nowego planu po zmianie terminu zadania, czekający na potwierdzenie delegowanego
+    NOWY_PLAN = "nowy plan"
+
+
+class StatusZmianyTerminu:
+    """Stan aktualizacji planu delegacji po zmianie terminu zadania (S22IT1S0P2-41)."""
+
+    OCZEKUJE = "oczekuje na potwierdzenie"
+    POTWIERDZONA = "potwierdzona"
+    WSTRZYMANA = "wstrzymana"  # delegowany nie może wziąć udziału – sprawa u przełożonego (3a–4a)
+    DO_UZGODNIENIA = "do uzgodnienia"  # nie da się przygotować planu w limitach – sprawa u przełożonego
+    ZASTAPIONA = "zastąpiona"  # kolejna zmiana terminu przed potwierdzeniem
 
 
 class StatusRozliczenia:
@@ -174,6 +186,34 @@ class Delegacja(Base):
         if status != self.status:
             self.status = status
             self.data_zmiany_statusu = teraz()
+
+
+class ZmianaTerminu(Base):
+    """Zmiana terminu zadania i aktualizacja planu delegacji (S22IT1S0P2-41) – rejestr zmian z porównaniem planów."""
+
+    __tablename__ = "zmiana_terminu"
+
+    id_zmiany: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    id_delegacji: Mapped[str] = mapped_column(ForeignKey("delegacja.id_delegacji"), index=True)
+    id_przedsiewziecia: Mapped[str | None] = mapped_column(ForeignKey("przedsiewziecie.id_przedsiewziecia"))
+    data_zgloszenia: Mapped[datetime] = mapped_column(DateTime, default=teraz)
+    powod: Mapped[str | None] = mapped_column(Text)
+    # Termin zadania, do którego pasują dotychczasowe daty delegacji, i nowy termin zadania
+    poczatek_zadania_przed: Mapped[date] = mapped_column(Date)
+    koniec_zadania_przed: Mapped[date] = mapped_column(Date)
+    poczatek_zadania: Mapped[date] = mapped_column(Date)
+    koniec_zadania: Mapped[date] = mapped_column(Date)
+    stary_wyjazd: Mapped[date | None] = mapped_column(Date)
+    stary_powrot: Mapped[date | None] = mapped_column(Date)
+    nowy_wyjazd: Mapped[date] = mapped_column(Date)
+    nowy_powrot: Mapped[date] = mapped_column(Date)
+    # Plany w postaci do porównania (termin, przejazdy, nocleg, koszt) – stan z chwili przygotowania zmiany
+    stary_plan: Mapped[dict] = mapped_column(JSON, default=dict)
+    nowy_plan: Mapped[dict | None] = mapped_column(JSON)
+    roznica_kosztu: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
+    status: Mapped[str] = mapped_column(String(30))
+    data_decyzji: Mapped[datetime | None] = mapped_column(DateTime)
+    uzasadnienie: Mapped[str | None] = mapped_column(Text)
 
 
 class PolecenieWyjazdu(Base):
