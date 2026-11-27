@@ -37,6 +37,7 @@ from ..przynaleznosc import jednostka_delegacji
 from ..stawki import LIMIT_NOCLEGOWY
 from .base import BladProcesu, Kontekst, pobierz_delegacje
 from .zakwaterowanie import kolejnosc, maks_czas_dojazdu, terminowy_dojazd
+from .zakwaterowanie_alternatywne import uzasadnienie_wyboru, uzupelnij_dokumentacje
 from .zmiana_przejazdu import dostepny_budzet
 
 TYP_WSTRZYMANIA = "Kontrola limitu noclegowego"
@@ -123,7 +124,7 @@ def zarezerwuj(s: Session, d: Delegacja, z: Zakwaterowanie, ktx: Kontekst, uzasa
     if obiekt is not None:
         obiekt.liczba_wolnych_miejsc -= 1
     z.status = StatusRezerwacji.WYBRANA
-    z.uzasadnienie = uzasadnienie
+    z.uzasadnienie = uzasadnienie_wyboru(s, d, obiekt, uzasadnienie)  # S22IT1S0P2-15: obiekt cywilny
     for wstrzymana in noclegi(s, d, StatusRezerwacji.WSTRZYMANA):  # wybrano obiekt w limicie zamiast wstrzymanego
         if wstrzymana is not z:
             wstrzymana.status = StatusRezerwacji.ANULOWANA
@@ -135,6 +136,8 @@ def zarezerwuj(s: Session, d: Delegacja, z: Zakwaterowanie, ktx: Kontekst, uzasa
     ktx.opis = f"Zarezerwowano {nazwa}, {z.data_od:%d.%m}–{z.data_do:%d.%m}, {_kwota(z.koszt_calkowity)}" + (
         f"; zobowiązanie budżetu {roznica:+.2f} zł" if roznica else ""
     )
+    if uzupelnij_dokumentacje(s, d, z, obiekt):  # S22IT1S0P2-15: dane noclegu w poleceniu wyjazdu
+        ktx.opis += "; polecenie wyjazdu uzupełnione o nocleg"
     ktx.wyslij(Typ.WYNIK_ZAKWATEROWANIA)
     return True
 

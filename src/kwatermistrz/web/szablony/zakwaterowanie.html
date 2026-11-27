@@ -93,11 +93,18 @@
   Wybrano <strong>{{ o.nazwa if o else oczekuje.id_obiektu }}</strong> – wariant wymaga odstępstwa od limitu
   i czeka na decyzję przełożonego.
 </p>
+{% elif do_uzgodnienia %}
+<p class="komunikat ostrzezenie" role="status">Odrzucono proponowane obiekty – nocleg w granicach limitu zorganizuje
+  osoba odpowiedzialna za organizację delegacji.</p>
 {% elif not w_limicie and not z_odstepstwem %}
 <article>
   <p>System dobiera obiekty zakwaterowania. Wróć tu za chwilę – pojawią się propozycje z kosztem i czasem dojazdu.</p>
 </article>
 {% else %}
+{# S22IT1S0P2-15 (130, 132): brak miejsc wojskowych – obiekty cywilne w limicie z kosztem i czasem dojazdu #}
+{% if brak_wojskowych %}
+<p class="komunikat ostrzezenie" role="status">{{ brak_wojskowych }}.</p>
+{% endif %}
 <form method="post" action="/app/wnioski/{{ d.id_delegacji }}/zakwaterowanie">
   <input type="hidden" name="csrf" value="{{ csrf }}">
   {% if w_limicie %}
@@ -123,6 +130,19 @@
   </label>
   <button type="submit">Zarezerwuj</button>
 </form>
+{% if mozna_wybrac %}
+<details>
+  <summary>Żaden obiekt mi nie odpowiada</summary>
+  <form method="post" action="/app/wnioski/{{ d.id_delegacji }}/zakwaterowanie/odrzucenie">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <label for="przyczyna_odrzucenia">Przyczyna *
+      <textarea id="przyczyna_odrzucenia" name="przyczyna" rows="2" maxlength="500" required></textarea>
+    </label>
+    <small>Sprawę zakwaterowania przejmie osoba odpowiedzialna za organizację delegacji.</small>
+    <button type="submit" class="secondary">Odrzuć wszystkie obiekty</button>
+  </form>
+</details>
+{% endif %}
 {% endif %}
 
 {# S22IT1S0P2-40 (153): samodzielny wybór obiektu z katalogu – system sprawdzi limit i budżet #}

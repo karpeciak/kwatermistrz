@@ -22,6 +22,8 @@ Zrobione:
   albo odmawia → `Typ.DECYZJA_ODSTEPSTWA`.
 - S22IT1S0P2-42: `GET /delegacje/{id}/zlecenie-transportu` – stan opóźnionego zlecenia (ponowienia, przewidywany
   termin); `POST /delegacje/{id}/oczekiwanie-na-zlecenie` – oczekiwanie albo rezygnacja → `Typ.DECYZJA_OCZEKIWANIA`.
+- S22IT1S0P2-15: `POST /delegacje/{id}/odrzucenie-zakwaterowania` – delegowany odrzuca wszystkie obiekty
+  → `Typ.ODRZUCENIE_ZAKWATEROWANIA` (sprawa u osoby odpowiedzialnej).
 """
 
 from datetime import date, time
@@ -31,7 +33,14 @@ from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..agents.limit_noclegu import katalog_obiektow, propozycje_w_limicie, przelozony, wniosek_o_odstepstwo
+from ..agents.limit_noclegu import (
+    ZAJETE,
+    katalog_obiektow,
+    noclegi,
+    propozycje_w_limicie,
+    przelozony,
+    wniosek_o_odstepstwo,
+)
 from ..agents.opoznienia import W_TOKU, zlecenie_transportu
 from ..agents.zmiana_przejazdu import ETAPY_PRZED_PODROZA, przejazdy_alternatywne
 from ..agents.zmiana_terminu import delegacje_przedsiewziecia, oczekujaca_zmiana, ostatnia_zmiana
@@ -619,3 +628,43 @@ async def oczekiwanie_na_zlecenie(
 ):
     sprawdz_csrf(request, request.headers.get("X-CSRF-Token"))
     return await przyjmij_decyzje_oczekiwania(s, broker, id_delegacji, uzytkownik, decyzja)
+
+
+# ---------------------------------------------------------------- S22IT1S0P2-15: odrzucenie wszystkich obiektów
+
+
+class OdrzucenieZakwaterowaniaIn(BaseModel):
+    przyczyna: str = Field(min_length=3, max_length=500)
+
+
+async def przyjmij_odrzucenie_zakwaterowania(
+    s: Session, broker: Broker, id_delegacji: str, u: Zolnierz, przyczyna: str
+) -> dict:
+    d = dostep_do_podrozy(s, id_delegacji, u)
+    if u.id_zolnierza != d.id_zolnierza:
+        raise HTTPException(403, "Propozycje zakwaterowania odrzuca delegowany")
+    if d.status != Status.ZATWIERDZONY or noclegi(s, d, *ZAJETE):
+        raise HTTPException(409, "Zakwaterowanie zostało już wybrane")
+    if not noclegi(s, d, StatusRezerwacji.PROPOZYCJA, StatusRezerwacji.WSTRZYMANA):
+        raise HTTPException(409, "Brak propozycji zakwaterowania do odrzucenia")
+    await broker.publikuj(
+        Komunikat(
+            typ=Typ.ODRZUCENIE_ZAKWATEROWANIA,
+            id_delegacji=id_delegacji,
+            dane={"przyczyna": przyczyna.strip(), "id_osoby": u.id_zolnierza},
+        )
+    )
+    return {"przyjeto": True, "komunikat": "Sprawa zakwaterowania zostanie przekazana osobie odpowiedzialnej"}
+
+
+@router.post("/delegacje/{id_delegacji}/odrzucenie-zakwaterowania", status_code=202)
+async def odrzucenie_zakwaterowania(
+    id_delegacji: str,
+    odrzucenie: OdrzucenieZakwaterowaniaIn,
+    request: Request,
+    s: Session = Depends(get_sesja),
+    broker: Broker = Depends(get_broker),
+    uzytkownik: Zolnierz = Depends(uzytkownik_sesji),
+):
+    sprawdz_csrf(request, request.headers.get("X-CSRF-Token"))
+    return await przyjmij_odrzucenie_zakwaterowania(s, broker, id_delegacji, uzytkownik, odrzucenie.przyczyna)

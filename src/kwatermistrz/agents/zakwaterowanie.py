@@ -13,6 +13,8 @@ Przebieg:
    → `zapisz_wybor` (S22IT1S0P2-99, `agents/rezerwacja.py`).
 3. S22IT1S0P2-40: wybór obiektu z katalogu z kontrolą limitu i decyzja przełożonego o odstępstwie
    (`agents/limit_noclegu.py`).
+4. S22IT1S0P2-15: brak miejsc w obiektach wojskowych – informacja i obiekty cywilne w limicie, uzasadnienie
+   i dokumentacja noclegu, odrzucenie wszystkich obiektów (`agents/zakwaterowanie_alternatywne.py`).
 """
 
 from datetime import datetime, time, timedelta
@@ -63,6 +65,8 @@ class AgentZakwaterowania(Agent):
             # S22IT1S0P2-40
             Typ.WYBOR_OBIEKTU: (self.wybierz_obiekt, "Wybór obiektu z kontrolą limitu noclegowego"),
             Typ.DECYZJA_ODSTEPSTWA: (self.decyduj_o_odstepstwie, "Decyzja o odstępstwie od limitu noclegowego"),
+            # S22IT1S0P2-15
+            Typ.ODRZUCENIE_ZAKWATEROWANIA: (self.odrzuc_propozycje, "Odrzucenie propozycji zakwaterowania"),
         }
 
     def przygotuj_propozycje(self, s: Session, k: Komunikat, ktx: Kontekst) -> None:
@@ -91,6 +95,12 @@ class AgentZakwaterowania(Agent):
         if w_limicie:
             self._zapisz(s, d, w_limicie, wymaga_odstepstwa=False)
             ktx.opis = f"Przygotowano {len(w_limicie)} propozycji zakwaterowania w limicie ({warunki})"
+            if all(o.rodzaj != "Wojskowy" for o in w_limicie):  # S22IT1S0P2-15 (130): same obiekty cywilne
+                from .zakwaterowanie_alternatywne import komunikat_brak_wojskowych
+
+                ktx.opis += "; " + komunikat_brak_wojskowych(miejscowosc).lower()
+                tresc = f"Delegacja {d.id_delegacji}: {komunikat_brak_wojskowych(miejscowosc)}"
+                ktx.wyslij(Typ.POWIADOMIENIE, {"do": d.id_zolnierza, "tresc": tresc})
             ktx.decyzja(
                 Decyzja(
                     typ=TYP_DECYZJI,
@@ -163,3 +173,8 @@ class AgentZakwaterowania(Agent):
         from .limit_noclegu import decyduj_o_odstepstwie
 
         decyduj_o_odstepstwie(s, k, ktx)
+
+    def odrzuc_propozycje(self, s: Session, k: Komunikat, ktx: Kontekst) -> None:
+        from .zakwaterowanie_alternatywne import odrzuc_propozycje  # S22IT1S0P2-15 (3a–4a)
+
+        odrzuc_propozycje(s, k, ktx)

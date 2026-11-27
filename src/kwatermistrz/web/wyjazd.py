@@ -24,6 +24,7 @@ from ..agents.limit_noclegu import (
     wniosek_o_odstepstwo,
     wstrzymana_rezerwacja,
 )
+from ..agents.zakwaterowanie_alternatywne import komunikat_brak_wojskowych, miejscowosc_delegacji
 from ..agents.zmiana_przejazdu import dostepny_budzet, odwolane_przejazdy, przejazdy_alternatywne
 from ..api.organizacja import (
     DecyzjaOdstepstwaIn,
@@ -34,6 +35,7 @@ from ..api.organizacja import (
     przyjmij_decyzje_oczekiwania,
     przyjmij_decyzje_odstepstwa,
     przyjmij_decyzje_planu,
+    przyjmij_odrzucenie_zakwaterowania,
     przyjmij_wybor,
     przyjmij_wybor_alternatywy,
     przyjmij_wybor_obiektu,
@@ -67,6 +69,7 @@ WYNIK_PLAN_POTWIERDZONY = "plan-potwierdzony"
 WYNIK_BRAK_UDZIALU = "brak-udzialu"
 WYNIK_OBIEKT = "obiekt-wybrany"
 WYNIK_ODSTEPSTWO = "odstepstwo-rozpatrzone"
+WYNIK_ODRZUCENIE_NOCLEGOW = "noclegi-odrzucone"
 KOMUNIKATY = {
     WYNIK_WYBOR: "Wybór przekazany – system zapisze go i uzupełni dokumentację delegacji.",
     WYNIK_ODRZUCENIE: "Odrzucono zaproponowane warianty – przejazd zostanie uzgodniony indywidualnie.",
@@ -80,6 +83,8 @@ KOMUNIKATY = {
     "a sprawę przejmie przełożony.",
     WYNIK_OBIEKT: "Wybór przekazany – system sprawdzi limit noclegowy i budżet jednostki.",
     WYNIK_ODSTEPSTWO: "Decyzja przekazana – system zarezerwuje obiekt albo poinformuje delegowanego o odmowie.",
+    WYNIK_ODRZUCENIE_NOCLEGOW: "Odrzucono proponowane obiekty – nocleg zorganizuje osoba odpowiedzialna "
+    "za organizację delegacji.",
 }
 
 
@@ -452,6 +457,11 @@ def dane_zakwaterowania(s: Session, d: Delegacja) -> dict:
         odstepstwo_dla_wstrzymanej=wolne and wstrzymana is not None and not w_limicie,
         katalog=katalog_obiektow(s, d) if wolne else [],
         limit=LIMIT_NOCLEGOWY,
+        # S22IT1S0P2-15: same obiekty cywilne w limicie (brak miejsc wojskowych) i odrzucenie wszystkich
+        brak_wojskowych=komunikat_brak_wojskowych(miejscowosc_delegacji(s, d))
+        if wolne and w_limicie and all(obiekty[z.id_obiektu].rodzaj != "Wojskowy" for z in w_limicie)
+        else None,
+        do_uzgodnienia=any(z.status == StatusRezerwacji.DO_UZGODNIENIA for z in noclegi) and not wybrane,
     )
 
 
@@ -625,3 +635,35 @@ async def decyzja_o_oczekiwaniu(
         return RedirectResponse(f"/app/wnioski/{id_delegacji}", status_code=303)
     wynik = "zlecenie-oczekiwanie" if czekam == "tak" else "zlecenie-wycofane"
     return RedirectResponse(f"/app/wnioski/{id_delegacji}?wynik={wynik}", status_code=303)
+
+
+@router.post("/wnioski/{id_delegacji}/zakwaterowanie/odrzucenie", response_class=HTMLResponse)
+async def odrzuc_zakwaterowanie(
+    id_delegacji: str,
+    request: Request,
+    przyczyna: str = Form(""),
+    s: Session = Depends(get_sesja),
+    broker: Broker = Depends(get_broker),
+    uzytkownik: Zolnierz = Depends(biezacy_uzytkownik),
+):
+    """S22IT1S0P2-15 (3a–4a): żaden obiekt nie odpowiada delegowanemu – sprawę przejmuje osoba odpowiedzialna."""
+    d = delegacja_do_organizacji(s, id_delegacji, uzytkownik)
+    formularz = await request.form()
+    sprawdz_csrf(request, request.headers.get("X-CSRF-Token") or formularz.get("csrf"))
+    komunikat = None
+    if len(przyczyna.strip()) < 3:
+        komunikat = "Podaj przyczynę odrzucenia wszystkich obiektów."
+    else:
+        try:
+            await przyjmij_odrzucenie_zakwaterowania(s, broker, d.id_delegacji, uzytkownik, przyczyna)
+        except HTTPException as e:
+            if e.status_code != 409:
+                raise
+            komunikat = e.detail
+    if komunikat:
+        return strona(
+            request, s, "zakwaterowanie.html", uzytkownik, **dane_zakwaterowania(s, d), komunikat=komunikat, blad=True
+        )
+    return RedirectResponse(
+        f"/app/wnioski/{id_delegacji}/zakwaterowanie?wynik={WYNIK_ODRZUCENIE_NOCLEGOW}", status_code=303
+    )
