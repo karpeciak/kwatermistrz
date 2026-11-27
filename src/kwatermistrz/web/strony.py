@@ -72,6 +72,7 @@ from ..models import (
     Rozliczenie,
     Status,
     StatusRezerwacji,
+    Zakwaterowanie,
     Zolnierz,
 )
 from ..podroze import (
@@ -896,6 +897,13 @@ def dane_wniosku(s: Session, id_delegacji: str, uzytkownik: Zolnierz) -> dict:
         odwolany_przejazd=s.scalar(  # S22IT1S0P2-17: link do wyboru przejazdu alternatywnego
             select(Przejazd.id_przejazdu).where(
                 Przejazd.id_delegacji == id_delegacji, Przejazd.status == StatusRezerwacji.ODWOLANA
+            )
+        )
+        is not None,
+        odstepstwo_noclegu=s.scalar(  # S22IT1S0P2-40: link do decyzji przełożonego o odstępstwie
+            select(Zakwaterowanie.id_zakwaterowania).where(
+                Zakwaterowanie.id_delegacji == id_delegacji,
+                Zakwaterowanie.status == StatusRezerwacji.DO_DECYZJI_PRZELOZONEGO,
             )
         )
         is not None,
