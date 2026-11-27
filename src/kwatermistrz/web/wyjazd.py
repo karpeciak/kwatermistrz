@@ -26,21 +26,25 @@ from ..agents.limit_noclegu import (
 )
 from ..agents.zakwaterowanie_alternatywne import komunikat_brak_wojskowych, miejscowosc_delegacji
 from ..agents.zmiana_przejazdu import dostepny_budzet, odwolane_przejazdy, przejazdy_alternatywne
+from ..agents.zmiana_w_podrozy import zmiany_uslug
 from ..api.organizacja import (
     DecyzjaOdstepstwaIn,
     DecyzjaPlanuIn,
     OczekiwanieIn,
+    OdpowiedzNaZmianeIn,
     WyborAlternatywyIn,
+    opis_zmiany,
     porownanie_planow,
     przyjmij_decyzje_oczekiwania,
     przyjmij_decyzje_odstepstwa,
     przyjmij_decyzje_planu,
+    przyjmij_odpowiedz_na_zmiane,
     przyjmij_odrzucenie_zakwaterowania,
     przyjmij_wybor,
     przyjmij_wybor_alternatywy,
     przyjmij_wybor_obiektu,
 )
-from ..api.zaleznosci import chron_formularze, get_broker, get_sesja, sprawdz_csrf
+from ..api.zaleznosci import chron_formularze, dostep_do_podrozy, get_broker, get_sesja, sprawdz_csrf
 from ..messaging import Broker, Komunikat, Typ
 from ..models import (
     Delegacja,
@@ -667,3 +671,68 @@ async def odrzuc_zakwaterowanie(
     return RedirectResponse(
         f"/app/wnioski/{id_delegacji}/zakwaterowanie?wynik={WYNIK_ODRZUCENIE_NOCLEGOW}", status_code=303
     )
+
+
+# ---------------------------------------------------------------- zmiana w podróży (S22IT1S0P2-34, podzadanie 149)
+
+WYNIK_AKCEPTACJA = "zmiana-zaakceptowana"
+WYNIK_ODRZUCENIE_ZMIANY = "zmiana-odrzucona"
+KOMUNIKATY_ZMIANY = {
+    WYNIK_AKCEPTACJA: "Akceptacja przekazana – system zaktualizuje plan i dokumentację delegacji oraz poinformuje "
+    "przełożonego.",
+    WYNIK_ODRZUCENIE_ZMIANY: "Odrzucenie przekazane – sprawę przejmie osoba dyżurna jednostki.",
+}
+
+
+def dane_zmian(s: Session, d: Delegacja) -> dict:
+    zmiany = [opis_zmiany(s, z) for z in zmiany_uslug(s, d)]
+    return dict(
+        d=d, zmiany=zmiany, oczekujaca=next((z for z in zmiany if z["status"] == "oczekuje na odpowiedź"), None)
+    )
+
+
+@router.get("/wnioski/{id_delegacji}/zmiana-w-podrozy", response_class=HTMLResponse)
+def zmiana_w_podrozy(
+    id_delegacji: str,
+    request: Request,
+    wynik: str | None = None,
+    s: Session = Depends(get_sesja),
+    uzytkownik: Zolnierz = Depends(biezacy_uzytkownik),
+):
+    """Powiadomienie o zmianie w podróży z rozwiązaniem zastępczym i historia zmian delegacji."""
+    d = dostep_do_podrozy(s, id_delegacji, uzytkownik)
+    return strona(
+        request, s, "zmiana_w_podrozy.html", uzytkownik, **dane_zmian(s, d), komunikat=KOMUNIKATY_ZMIANY.get(wynik)
+    )
+
+
+@router.post("/wnioski/{id_delegacji}/zmiana-w-podrozy", response_class=HTMLResponse)
+async def odpowiedz_na_zmiane_w_podrozy(
+    id_delegacji: str,
+    request: Request,
+    id_zmiany: str = Form(""),
+    odpowiedz: str = Form(""),
+    uzasadnienie: str = Form(""),
+    s: Session = Depends(get_sesja),
+    broker: Broker = Depends(get_broker),
+    uzytkownik: Zolnierz = Depends(biezacy_uzytkownik),
+):
+    """Akceptacja albo odrzucenie rozwiązania zastępczego przez delegowanego."""
+    d = dostep_do_podrozy(s, id_delegacji, uzytkownik)
+    formularz = await request.form()
+    sprawdz_csrf(request, request.headers.get("X-CSRF-Token") or formularz.get("csrf"))
+    akceptacja = odpowiedz == "akceptuje"
+    try:
+        dane = OdpowiedzNaZmianeIn(
+            id_zmiany=_na_liczbe(id_zmiany) or 0, akceptacja=akceptacja, uzasadnienie=uzasadnienie
+        )
+        await przyjmij_odpowiedz_na_zmiane(s, broker, id_delegacji, uzytkownik, dane)
+    except (ValidationError, HTTPException) as e:
+        if isinstance(e, HTTPException) and e.status_code not in (404, 409):
+            raise
+        komunikat = str(e.detail) if isinstance(e, HTTPException) else "Wskaż zmianę, na którą odpowiadasz."
+        return strona(
+            request, s, "zmiana_w_podrozy.html", uzytkownik, **dane_zmian(s, d), komunikat=komunikat, blad=True
+        )
+    wynik = WYNIK_AKCEPTACJA if akceptacja else WYNIK_ODRZUCENIE_ZMIANY
+    return RedirectResponse(f"/app/wnioski/{id_delegacji}/zmiana-w-podrozy?wynik={wynik}", status_code=303)

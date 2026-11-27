@@ -88,6 +88,7 @@ JEDNOSTKI = [
         nazwa="JW 1001 – Batalion Logistyczny",
         miejscowosc="Warszawa",
         budzet_delegacji=Decimal("250000"),
+        id_dyzurnego="ZOL-002",  # osoba dyżurna jednostki (S22IT1S0P2-34)
     ),
 ]
 
