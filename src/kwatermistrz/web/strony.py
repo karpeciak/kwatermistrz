@@ -26,6 +26,7 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from ..agents.koordynator import DECYZJA_SYNCHRONIZACJI, KONTROLA_STATUSU, Koordynator, brakujace_elementy_organizacji
+from ..agents.opoznienia import zlecenie_transportu
 from ..agents.zmiana_terminu import ostatnia_zmiana
 from ..api.organizacja import przyjmij_wariant, przyjmij_wybor
 from ..api.rozliczenia import (
@@ -73,6 +74,7 @@ from ..models import (
     Rozliczenie,
     Status,
     StatusRezerwacji,
+    StatusZlecenia,
     StatusZmianyTerminu,
     Zakwaterowanie,
     Zolnierz,
@@ -856,6 +858,7 @@ def dane_wniosku(s: Session, id_delegacji: str, uzytkownik: Zolnierz) -> dict:
             bledy = walidacje[-1].uzasadnienie.split("; ")
     oczekiwanie = None
     zmiana_terminu = ostatnia_zmiana(s, d)  # S22IT1S0P2-41
+    zlecenie = zlecenie_transportu(s, d)  # S22IT1S0P2-42
     wynik_transportu = any(o.id_agenta == "AG-04" for o in operacje)
     odswiezaj = d.status in ETAPY_W_TOKU and (teraz() - d.data_zmiany_statusu).total_seconds() < 60
     if d.status == Status.ZLOZONY:
@@ -886,6 +889,15 @@ def dane_wniosku(s: Session, id_delegacji: str, uzytkownik: Zolnierz) -> dict:
             else:
                 oczekiwanie = "Warianty są przygotowane. Oczekiwanie na wybór podróży."
             odswiezaj = False
+        elif zlecenie is not None and zlecenie.status in (StatusZlecenia.OPOZNIONE, StatusZlecenia.OCZEKIWANIE):
+            oczekiwanie = (  # S22IT1S0P2-42
+                "Przygotowanie wariantów podróży trwa dłużej niż zwykle – zlecenie ponowiono, przewidywany termin "
+                f"odpowiedzi: {czas_lokalny(zlecenie.przewidywany_termin)}."
+            )
+            odswiezaj = False
+        elif zlecenie is not None and zlecenie.status == StatusZlecenia.WYCOFANE:
+            oczekiwanie = "Zlecenie przygotowania transportu wycofano – transport organizuje osoba odpowiedzialna."
+            odswiezaj = False
         else:
             oczekiwanie = "Oczekiwanie na przygotowanie wariantów podróży."
     etap = ETAP_STATUSU_BOCZNEGO.get(d.status, d.status)
@@ -915,6 +927,7 @@ def dane_wniosku(s: Session, id_delegacji: str, uzytkownik: Zolnierz) -> dict:
         )
         is not None,
         zmiana_terminu=zmiana_terminu,
+        zlecenie_transportu=zlecenie,
         odstepstwo_noclegu=s.scalar(  # S22IT1S0P2-40: link do decyzji przełożonego o odstępstwie
             select(Zakwaterowanie.id_zakwaterowania).where(
                 Zakwaterowanie.id_delegacji == id_delegacji,
@@ -944,6 +957,9 @@ def wniosek(
             "a dane delegacji pozostały bez zmian."
         ),
         "blad-sprawdzenia": "Nie udało się sprawdzić statusu. Spróbuj ponownie lub skontaktuj się z obsługą.",
+        # S22IT1S0P2-42: decyzja o oczekiwaniu na opóźnione zlecenie
+        "zlecenie-oczekiwanie": "Potwierdzono oczekiwanie – system poinformuje, gdy warianty transportu będą gotowe.",
+        "zlecenie-wycofane": "Zlecenie zostanie wycofane – transport zorganizuje osoba odpowiedzialna za delegację.",
     }
     return strona(
         request,
